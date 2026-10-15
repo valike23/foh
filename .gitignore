@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.next/
+.next-verify/
+*.tsbuildinfo
+
+# Local hub runtime state
+apps/hub/data/
+apps/cloud/data/
+
+# Environment overrides
+.env
+.env.local
+.env.*
+!.env.example
+.DS_Store

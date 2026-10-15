@@ -1,0 +1,68 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { randomUUID, scryptSync } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import express from "express";
+import sharp from "sharp";
+import { createHubDatabase } from "../dist/db.js";
+import { createManagementRouter } from "../dist/management.js";
+import { defaultGuestBranding } from "@exa-foh/shared";
+
+test("event branding persists with scoped media, optimistic saves and safe public assets", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "exa-branding-"));
+  const path = join(dir, "hub.sqlite");
+  const hub = createHubDatabase(path); const original = hub.loadSnapshot();
+  const app = express(); app.use(express.json({ limit: "8mb" }));
+  const management = createManagementRouter(path, "org-test", () => hub.loadSnapshot()); app.use("/api/manage", management);
+  const server = app.listen(0, "127.0.0.1"); await new Promise(resolve => server.once("listening", resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); });
+  const root = `http://127.0.0.1:${server.address().port}/api/manage`; let token;
+  async function request(path, method = "GET", body, auth = token) {
+    const response = await fetch(`${root}${path}`, { method, headers: { "Content-Type": "application/json", ...(auth ? { Authorization: `Bearer ${auth}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    return { status: response.status, body: await response.json() };
+  }
+  token = (await request("/auth/setup", "POST", { name: "Brand Owner", email: "branding@test.example", password: "branding-test-password", setupKey: readFileSync(`${path}.setup-key`, "utf8") })).body.token;
+  const id = original.event.id; const endpoint = `/events/${id}/branding`;
+  assert.equal((await request(endpoint, "GET", undefined, null)).status, 401);
+  const before = await request(endpoint); assert.equal(before.status, 200); assert.equal(before.body.version, 0); assert.equal(before.body.canEdit, true);
+  const bytes = await sharp({ create: { width: 1200, height: 300, channels: 4, background: "#0f766e" } }).png().toBuffer();
+  const image = await request(`${endpoint}/assets`, "POST", { kind: "image", name: "header.png", base64: bytes.toString("base64") });
+  assert.equal(image.status, 201, JSON.stringify(image.body));
+  const font = await request(`${endpoint}/assets`, "POST", { kind: "font", name: "EventFont.woff2", base64: readFileSync(resolve(import.meta.dirname, "../../../node_modules/next/dist/next-devtools/server/font/geist-latin.woff2")).toString("base64") });
+  assert.equal(font.status, 201, JSON.stringify(font.body));
+  for (const [kind, data] of [["image", "<svg onload='alert(1)'></svg>"], ["font", "not-a-font"]]) assert.equal((await request(`${endpoint}/assets`, "POST", { kind, name: "bad", base64: Buffer.from(data).toString("base64") })).status, 422);
+  const assetResponse = await fetch(`${root}/branding-assets/${image.body.id}`);
+  assert.equal(assetResponse.headers.get("content-type"), "image/webp");
+  assert.equal(assetResponse.headers.get("x-content-type-options"), "nosniff");
+  assert.equal((await sharp(Buffer.from(await assetResponse.arrayBuffer())).metadata()).width, 1200);
+  let draft = { ...defaultGuestBranding(), backgroundColor: "#ffffff", surfaceColor: "#f8fafc", accentColor: "#007766", backgroundImageId: image.body.id, headerImageId: image.body.id, fontAssetId: font.body.id, fontName: font.body.name,
+    sponsors: [{ id: randomUUID(), name: "Sponsor One", logoAssetId: image.body.id, website: "https://example.com" }] };
+  const saved = await request(endpoint, "PATCH", { version: 0, branding: draft }); assert.equal(saved.status, 200); assert.equal(saved.body.version, 1);
+  assert.equal((await request(endpoint, "PATCH", { version: 0, branding: draft })).status, 409);
+  assert.equal((await request(endpoint, "PATCH", { version: 1, branding: { ...draft, backgroundColor: "red;display:none" } })).status, 422);
+  assert.equal((await request(endpoint, "PATCH", { version: 1, branding: { ...draft, headerImageId: font.body.id } })).status, 422);
+  assert.equal((await request(endpoint, "PATCH", { version: 1, branding: { ...draft, sponsors: [{ ...draft.sponsors[0], website: "javascript:alert(1)" }] } })).status, 422);
+  const other = (await request("/events", "POST", { name: "Independent Event", venueId: null, location: "Lagos", timezone: "Africa/Lagos", startsAt: "2026-10-01T16:00:00Z", endsAt: "2026-10-02T01:00:00Z", organizer: "Owner", notes: "" })).body;
+  assert.deepEqual((await request(`/events/${other.id}/branding`)).body.branding, defaultGuestBranding());
+  assert.equal((await request(`/events/${other.id}/branding`, "PATCH", { version: 0, branding: draft })).status, 422, "cross-event asset reference denied");
+  const store = (await request(`/storefronts/${original.stores[0].id}`)).body.record;
+  assert.deepEqual(management.resolveEntry(store.qrToken).guestBranding, draft);
+  assert.deepEqual(createManagementRouter(path, "org-test", () => hub.loadSnapshot()).getBranding(id), draft, "settings survive reopening database");
+  const sql = new DatabaseSync(path);
+  const venueId = (await request(`/events/${id}`)).body.record.venueId;
+  const viewer = { id: randomUUID(), name: "Viewer", email: "viewer@test.example", role: "viewer", venueIds: [venueId], organizationId: "org-test", active: true, salt: "salt", passwordHash: scryptSync("viewer-password", "salt", 64).toString("hex") };
+  sql.prepare("INSERT INTO management_accounts VALUES (?, ?, ?)").run(viewer.id, viewer.email, JSON.stringify(viewer));
+  const viewerToken = (await request("/auth/login", "POST", { email: viewer.email, password: "viewer-password" })).body.token;
+  assert.equal((await request(endpoint, "GET", undefined, viewerToken)).body.canEdit, false);
+  assert.equal((await request(endpoint, "PATCH", { version: 1, branding: draft }, viewerToken)).status, 403);
+  assert.equal((await request(`${endpoint}/assets`, "POST", { kind: "image", name: "image.png", base64: bytes.toString("base64") }, viewerToken)).status, 403);
+  viewer.role = "manager"; viewer.venueIds = []; sql.prepare("UPDATE management_accounts SET data = ? WHERE id = ?").run(JSON.stringify(viewer), viewer.id);
+  assert.equal((await request(endpoint, "GET", undefined, viewerToken)).status, 403);
+  sql.close();
+  assert.equal((await request(endpoint, "PATCH", { version: 1, branding: defaultGuestBranding() })).status, 200);
+  assert.deepEqual(management.resolveEntry(store.qrToken).guestBranding, defaultGuestBranding());
+  assert.deepEqual(hub.loadSnapshot().orders, original.orders); assert.deepEqual(hub.loadSnapshot().inventory, original.inventory);
+});

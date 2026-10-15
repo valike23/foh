@@ -1,0 +1,58 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
+import express from "express";
+import { createHubDatabase } from "../dist/db.js";
+import { createManagementRouter } from "../dist/management.js";
+
+test("reference preview is isolated, read-only, persistent and provisions zero stock", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "exa-preview-")); const path = join(dir, "hub.sqlite");
+  const hub = createHubDatabase(path); const original = hub.loadSnapshot();
+  const app = express(); app.use(express.json());
+  const management = createManagementRouter(path, "org-test", () => hub.loadSnapshot()); app.use("/api/manage", management);
+  const seed = () => spawnSync(process.execPath, [resolve(import.meta.dirname, "../../../scripts/seed-dine-at-night.mjs")], { env: { ...process.env, HUB_DB_PATH: path, EXA_ORGANIZATION_ID: "org-test" }, encoding: "utf8" });
+  const first = seed(); assert.equal(first.status, 0, first.stderr);
+  const sql = new DatabaseSync(path); t.after(() => sql.close());
+  const preview = sql.prepare("SELECT * FROM event_menu_previews").get();
+  const event = JSON.parse(sql.prepare("SELECT data FROM business_records WHERE id='event-dine-at-night'").get().data);
+  assert.equal(event.status, "draft"); assert.match(event.startsAt, /^2026-12-17/);
+  assert.equal(JSON.parse(preview.data).length, 8);
+  assert.equal(seed().status, 0); assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM event_menu_previews").get().n, 1);
+  const server = app.listen(0, "127.0.0.1"); await new Promise(resolve => server.once("listening", resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); });
+  const root = `http://127.0.0.1:${server.address().port}/api/manage`; let token;
+  async function request(path, method = "GET", body, auth = token) {
+    const response = await fetch(`${root}${path}`, { method, headers: { "Content-Type": "application/json", ...(auth ? { Authorization: `Bearer ${auth}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    return { status: response.status, body: await response.json() };
+  }
+  assert.equal((await request("/events/event-dine-at-night/menu-preview")).status, 401);
+  assert.equal((await request("/menu-preview/not-a-token")).status, 404);
+  const result = await request(`/menu-preview/${preview.token}`);
+  assert.equal(result.status, 200); assert.equal(result.body.preview, true);
+  const snapshot = result.body.snapshot;
+  assert.equal(snapshot.event.guestBranding.theme, "night-market");
+  for (const key of ["orders", "users", "inventory", "payments", "auditLog", "vendors"]) assert.equal(snapshot[key].length, 0);
+  assert.equal(snapshot.menuItems.length, 8); assert.equal(snapshot.stores.length, 2);
+  assert.throws(() => management.resolveEntry(preview.token), /not active/);
+  const storefront = JSON.parse(sql.prepare("SELECT data FROM business_records WHERE id='store-dan-aep'").get().data);
+  assert.equal(management.resolveEntry(storefront.qrToken).open, false);
+  token = (await request("/auth/setup", "POST", { name: "Preview Owner", email: "preview@test.example", password: "preview-test-password", setupKey: readFileSync(`${path}.setup-key`, "utf8") })).body.token;
+  assert.equal((await request("/events/event-dine-at-night/menu-preview")).body.token, preview.token);
+  const ready = await request("/events/event-dine-at-night/status", "POST", { version: 1, status: "ready", reason: "Reference workflow test" });
+  assert.equal(ready.status, 200, JSON.stringify(ready.body));
+  const published = await request("/operations/event-dine-at-night/publish", "POST", { scopeType: "event", version: ready.body.version });
+  assert.equal(published.status, 201, JSON.stringify(published.body));
+  const runtime = management.runtimeFor(event.id);
+  assert.equal(runtime.snapshot.menuItems.length, 8);
+  assert.equal(runtime.snapshot.inventory.length, 8);
+  assert.ok(runtime.snapshot.inventory.every(item => item.quantity === 0));
+  assert.equal((await request("/operations/event-dine-at-night/lifecycle", "POST", { revision: runtime.revision, action: "open", reason: "Must fail without stock" })).status, 409);
+  assert.deepEqual(hub.loadSnapshot().orders, original.orders);
+  const archived = { ...ready.body, status: "archived" };
+  sql.prepare("UPDATE business_records SET data=? WHERE id=?").run(JSON.stringify(archived), event.id);
+  assert.equal((await request(`/menu-preview/${preview.token}`, "GET", undefined, null)).status, 410);
+});
