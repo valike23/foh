@@ -10,6 +10,7 @@ import { Button, cn } from "@exa-foh/ui";
 import type { BusinessKind, BusinessDetail, BusinessOptions, BusinessEntity, ManagedEvent, ManagedStorefront, FloorPlace } from "@exa-foh/shared";
 import { ApiError, managementApi } from "../lib/management-api";
 import { useManagementUser } from "./management-shell";
+import { useOnlineWorkspace } from "./deployment-context";
 import { GuestAppearanceEditor } from "./guest-appearance-editor";
 
 export const businessLabels = { events: "Events", vendors: "Vendors", storefronts: "Storefronts", floor: "Floor & QR" };
@@ -67,6 +68,7 @@ export function BusinessDirectory({ kind }: { kind: BusinessKind }) {
 }
 
 export function BusinessRecordPage({ kind, id, editing = false }: { kind: BusinessKind; id: string; editing?: boolean }) {
+  const online = useOnlineWorkspace();
   const { options, error: optionsError } = useOptions(); const params = useSearchParams(); const router = useRouter(); const user = useManagementUser();
   const [detail, setDetail] = useState<BusinessDetail | null>(null); const [error, setError] = useState(""); const [revision, setRevision] = useState(0);
   const [action, setAction] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [actionError, setActionError] = useState("");
@@ -79,7 +81,7 @@ export function BusinessRecordPage({ kind, id, editing = false }: { kind: Busine
   const record = detail.record as any;
   const tab = params.get("tab") ?? "overview";
   const operationQuery = kind === "events" ? `scopeType=event&scopeId=${id}` : `scopeType=${record.scopeType}&scopeId=${record.scopeId}`;
-  const tabs = ["overview", "activity", ...(kind === "events" ? ["appearance"] : []), ...((kind === "storefronts" || (kind === "floor" && record.kind !== "section")) ? ["qr"] : [])];
+  const tabs = ["overview", "activity", ...(kind === "events" && !online ? ["appearance"] : []), ...(!online && (kind === "storefronts" || (kind === "floor" && record.kind !== "section")) ? ["qr"] : [])];
   async function submitAction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setActionError("");
     const values = Object.fromEntries(new FormData(event.currentTarget));
@@ -101,9 +103,9 @@ export function BusinessRecordPage({ kind, id, editing = false }: { kind: Busine
   return <><Link href={`/${kind}`} className="inline-flex items-center gap-2 text-sm text-muted-foreground"><ArrowLeft size={15} />{businessLabels[kind]}</Link>
     <div className="mt-5 flex flex-wrap items-center justify-between gap-4"><div className="flex flex-wrap items-center gap-3"><h1 className="text-2xl font-semibold break-words">{record.name}</h1><Status value={record.status} /></div><div className="flex gap-2">{kind === "events" && user?.role !== "viewer" && <Button variant="outline" onClick={() => { setActionError(""); setAction("clone"); }}><Copy />Clone event</Button>}{detail.canEdit && !["archived", "closed", "cancelled"].includes(record.status) && <Button asChild variant="outline"><Link href={`/${kind}/${id}/edit`}><Pencil />Edit {singular[kind]}</Link></Button>}</div></div>
     <nav className="mt-7 flex flex-wrap gap-6 border-b border-border" aria-label="Record sections">{tabs.map(value => <Link key={value} href={`/${kind}/${id}?tab=${value}`} className={cn("border-b-2 py-4 text-sm capitalize", tab === value ? "border-primary" : "border-transparent text-muted-foreground")}>{value === "qr" ? "QR code" : value === "appearance" ? "Guest appearance" : value}</Link>)}</nav>
-    {kind === "events" && tab === "appearance" && <GuestAppearanceEditor key={id} eventId={id} />}
+    {!online && kind === "events" && tab === "appearance" && <GuestAppearanceEditor key={id} eventId={id} />}
     {tab === "overview" && <div className="grid gap-10 py-8 xl:grid-cols-[minmax(0,1fr)_340px]"><div><h2 className="font-semibold">Details</h2><dl className="mt-2 grid gap-x-8 sm:grid-cols-2">{displayFields.map(([label, value]) => <div className="border-b border-border py-5" key={label}><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-2 break-words text-sm">{value || "Not provided"}</dd></div>)}</dl>{record.notes && <section className="mt-7"><h2 className="font-semibold">Notes</h2><p className="mt-3 whitespace-pre-wrap break-words text-sm text-muted-foreground">{record.notes}</p></section>}{kind === "storefronts" && <section className="mt-7"><h2 className="font-semibold">Commercial terms</h2><p className="mt-3 whitespace-pre-wrap break-words text-sm text-muted-foreground">{record.commercialTerms || "Not agreed"}</p></section>}
-      {kind === "events" && <div className="mt-8 flex flex-wrap gap-3"><Button asChild variant="outline"><Link href={`/storefronts?${operationQuery}`}>Storefronts<ArrowRight /></Link></Button><Button asChild variant="outline"><Link href={`/floor?${operationQuery}`}>Floor & QR<ArrowRight /></Link></Button><CustomerMenuPreview key={id} eventId={id} status={record.status} /></div>}
+      {kind === "events" && <div className="mt-8 flex flex-wrap gap-3"><Button asChild variant="outline"><Link href={`/storefronts?${operationQuery}`}>Storefronts<ArrowRight /></Link></Button><Button asChild variant="outline"><Link href={`/floor?${operationQuery}`}>Floor & QR<ArrowRight /></Link></Button>{!online && <CustomerMenuPreview key={id} eventId={id} status={record.status} />}</div>}
       {kind === "vendors" && <section className="mt-8"><h2 className="font-semibold">Storefront allocations</h2><VendorAllocations vendorId={id} /></section>}
     </div><aside className="border-t border-border pt-6 xl:border-l xl:border-t-0 xl:pl-7 xl:pt-0">{kind === "events" && <><h2 className="font-semibold">Setup checklist</h2><ul className="mt-4 space-y-4">{detail.readiness.map(check => <li key={check.label} className="flex justify-between gap-3 text-sm"><span className="text-muted-foreground">{check.label}</span><span className={check.complete ? "text-emerald-300" : "text-amber-300"}>{check.complete ? "Ready" : "Missing"}</span></li>)}</ul></>}
       <section className={kind === "events" ? "mt-7 border-t border-border pt-6" : ""}><h2 className="font-semibold">Status</h2>{detail.linkedService ? <p className="mt-3 text-sm text-muted-foreground">Published to the current service. Configuration is locked.</p> : kind === "events" && <p className="mt-3 text-sm text-muted-foreground">Service not connected. Guest ordering remains closed.</p>}{detail.canEdit && <div className="mt-4 flex flex-wrap gap-2">{detail.transitions.map(status => <Button key={status} variant="outline" size="sm" disabled={status === "archived" && detail.blockers.length > 0} onClick={() => { setActionError(""); setAction(status); }}>{status === "draft" ? "Return to draft" : status === "ready" ? "Mark ready" : status === "active" ? "Activate" : status === "paused" ? "Pause" : status === "cancelled" ? "Cancel event" : "Archive"}</Button>)}</div>}{detail.blockers.length > 0 && <ul className="mt-4 list-disc space-y-2 pl-4 text-xs text-muted-foreground">{detail.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul>}</section>

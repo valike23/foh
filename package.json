@@ -11,6 +11,10 @@
   "scripts": {
     "dev": "concurrently -n cloud,hub,boh,guest -c blue,cyan,green,magenta \"npm run dev -w @exa-foh/cloud\" \"npm run dev -w @exa-foh/hub\" \"npm run dev -w @exa-foh/boh-dashboard\" \"npm run dev -w @exa-foh/guest-order\"",
     "dev:cloud": "npm run dev -w @exa-foh/cloud",
+    "dev:online": "concurrently -n online,dashboard -c blue,cyan \"npm run dev:online -w @exa-foh/cloud\" \"npm run dev:boh\"",
+    "db:migrate": "npm run db:migrate -w @exa-foh/cloud",
+    "test:online": "npm run test:online -w @exa-foh/cloud",
+    "test:workspace:browser": "node scripts/main-workspace-browser-flow.mjs",
     "dev:hub": "npm run dev -w @exa-foh/hub",
     "dev:boh": "npm run dev -w @exa-foh/boh-dashboard",
     "dev:guest": "npm run dev -w @exa-foh/guest-order",
@@ -22,6 +26,7 @@
     "node": ">=22.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/node": "^22.10.2",
     "concurrently": "^9.1.0",
     "typescript": "^5.7.2"

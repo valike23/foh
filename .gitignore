@@ -3,6 +3,8 @@ dist/
 .next/
 .next-verify/
 *.tsbuildinfo
+test-results/
+playwright-report/
 
 # Local hub runtime state
 apps/hub/data/

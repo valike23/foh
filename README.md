@@ -50,6 +50,10 @@ On first boot, the hub seeds the database. If the older JSON state file exists, 
 
 ## Run Locally
 
+### Online tenant onboarding with local PostgreSQL
+
+The main dashboard supports organization signup, tenant subdomains, owner login and tenant-scoped management/service records using Prisma and PostgreSQL. After configuring `apps/cloud/.env`, run `npm run db:migrate` and `npm run dev:online`, then visit **http://app.localhost:5173**. Login opens Dashboard, added to the original sidebar; tenant signup/login use a modern dedicated design with optional organization colour and logo. The dashboard retains its original menu. The API runs on port 4200. On-site operation at `localhost:5173` still uses SQLite. See [setup, supported workflows and tests](docs/local-online-tenancy.md) for details and remaining guest/sync migration work.
+
 ### Event Guest Appearance
 
 Open **Events > select an event > Guest appearance** to configure its guest ordering page. Background colour or image (cover/tile), menu surface and accent colours, header artwork, built-in font families or uploaded WOFF/WOFF2 fonts, and up to 20 sponsor logos with optional HTTPS links are supported. Sponsors can be reordered or removed. Preview changes before saving; Reset appearance changes the draft until saved.

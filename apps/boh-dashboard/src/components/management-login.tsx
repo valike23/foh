@@ -5,8 +5,14 @@ import { useRouter } from "next/navigation";
 import { ArrowRight, KeyRound } from "lucide-react";
 import { Button } from "@exa-foh/ui";
 import { ApiError, managementApi } from "../lib/management-api";
+import { useOnlineWorkspace } from "./deployment-context";
+import { OnlineAuth } from "./online-auth";
 
 export function ManagementLogin() {
+  const online = useOnlineWorkspace();
+  return online ? <OnlineAuth /> : <OnsiteLogin />;
+}
+function OnsiteLogin() {
   const router = useRouter();
   const [setup, setSetup] = useState<boolean | null>(null);
   const [error, setError] = useState("");
@@ -18,8 +24,8 @@ export function ManagementLogin() {
     if (typeof data.setupKey === "string") data.setupKey = data.setupKey.trim();
     try {
       await managementApi(`/auth/${setup ? "setup" : "login"}`, { method: "POST", body: JSON.stringify(data) });
-      const target = new URLSearchParams(window.location.search).get("next") ?? "/venues";
-      router.replace(/^\/((venues|events|vendors|storefronts|floor|operations|service)(?:\/|\?|$)|settings\/account$)/.test(target) ? target : "/venues");
+      const target = new URLSearchParams(window.location.search).get("next") ?? "/dashboard";
+      router.replace(/^\/((dashboard|overview|sales|stock|floor-control|venues|events|vendors|storefronts|floor|operations|service)(?:\/|\?|$)|settings\/account$)/.test(target) ? target : "/dashboard");
     } catch (error) {
       setError(error instanceof ApiError && Object.keys(error.fields).length ? Object.entries(error.fields).map(([field, errors]) => `${field}: ${errors.join(", ")}`).join(". ") : (error as Error).message);
     } finally { setBusy(false); }

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isOnlineWorkspace } from "../../../../lib/deployment";
+import { proxyOnline } from "../../../../lib/online-proxy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +23,10 @@ function isSameOrigin(request: NextRequest): boolean {
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
   if (path.some(part => !/^[a-zA-Z0-9-]+$/.test(part))) return NextResponse.json({ error: "Invalid path" }, { status: 400 });
+  if (isOnlineWorkspace(request.headers.get("host") ?? "")) {
+    const service = path[0] === "service" && path[2] === "api" && path.length > 3;
+    return proxyOnline(request, service ? `/api/operations/${path[1]}/service/${path.slice(3).join("/")}` : `/api/${path.join("/")}`);
+  }
   if (request.method !== "GET") {
     if (!isSameOrigin(request)) return NextResponse.json({ error: "Request origin is not allowed" }, { status: 403 });
     if (!request.headers.get("content-type")?.startsWith("application/json")) return NextResponse.json({ error: "JSON required" }, { status: 415 });

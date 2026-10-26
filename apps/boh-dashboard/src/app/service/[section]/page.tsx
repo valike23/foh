@@ -1,6 +1,8 @@
 import { notFound, redirect } from "next/navigation";
 import { BohDashboardApp } from "../../../components/boh-dashboard-app";
 import { isServicePage } from "../../../lib/service-pages";
+import { headers } from "next/headers";
+import { isOnlineWorkspace } from "../../../lib/deployment";
 
 export default async function Page({ params, searchParams }: {
   params: Promise<{ section: string }>;
@@ -10,5 +12,9 @@ export default async function Page({ params, searchParams }: {
   if (!isServicePage(section)) notFound();
   const { operation } = await searchParams;
   if (!operation) redirect("/operations");
+  if (isOnlineWorkspace((await headers()).get("host") ?? "")) {
+    const target = ["setup", "inventory"].includes(section) ? "stock" : ["payments", "staff-order", "prep", "ledger"].includes(section) ? "sales" : ["tables", "runner"].includes(section) ? "floor-control" : "overview";
+    redirect(`/${target}?operation=${encodeURIComponent(operation)}`);
+  }
   return <BohDashboardApp key={`${operation}:${section}`} page={section} />;
 }

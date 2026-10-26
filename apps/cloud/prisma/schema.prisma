@@ -1,0 +1,75 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String    @id @default(uuid())
+  slug      String    @unique
+  name      String
+  brandColor String?
+  brandLogo  String?
+  createdAt DateTime  @default(now())
+  accounts  Account[]
+  sessions  Session[]
+  venues    Venue[]
+  records   WorkspaceRecord[]
+}
+
+model Account {
+  id           String    @id @default(uuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name         String
+  email        String
+  passwordHash String
+  salt         String
+  role         String    @default("owner")
+  createdAt    DateTime  @default(now())
+  sessions     Session[]
+
+  @@unique([tenantId, email])
+  @@unique([tenantId, id])
+}
+
+model Session {
+  tokenHash String   @id
+  tenantId  String
+  accountId String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  account   Account  @relation(fields: [tenantId, accountId], references: [tenantId, id], onDelete: Cascade)
+  expiresAt DateTime
+
+  @@index([tenantId, expiresAt])
+}
+
+model Venue {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  address   String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  status    String   @default("draft")
+  version   Int      @default(1)
+  profile   Json     @default("{}")
+  activity  Json     @default("[]")
+
+  @@index([tenantId, createdAt])
+}
+
+model WorkspaceRecord {
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kind     String
+  id       String @default(uuid())
+  version  Int    @default(1)
+  data     Json
+
+  @@id([tenantId, kind, id])
+}
