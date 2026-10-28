@@ -25,7 +25,7 @@ function OnsiteLogin() {
     try {
       await managementApi(`/auth/${setup ? "setup" : "login"}`, { method: "POST", body: JSON.stringify(data) });
       const target = new URLSearchParams(window.location.search).get("next") ?? "/dashboard";
-      router.replace(/^\/((dashboard|overview|sales|stock|floor-control|venues|events|vendors|storefronts|floor|operations|service)(?:\/|\?|$)|settings\/account$)/.test(target) ? target : "/dashboard");
+      router.replace(/^\/((dashboard|overview|sales|payments|orders|stock|floor-control|venues|events|vendors|storefronts|floor|operations|service)(?:\/|\?|$)|settings\/account$)/.test(target) ? target : "/dashboard");
     } catch (error) {
       setError(error instanceof ApiError && Object.keys(error.fields).length ? Object.entries(error.fields).map(([field, errors]) => `${field}: ${errors.join(", ")}`).join(". ") : (error as Error).message);
     } finally { setBusy(false); }

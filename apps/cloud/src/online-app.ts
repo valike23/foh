@@ -6,6 +6,8 @@ import { z } from "zod";
 import { tenantFromHost, validTenantSlug } from "./tenant-host.js";
 import { createWorkspaceApi, WorkspaceError } from "./workspace-api.js";
 import { brandingSchema, normalizeBrandLogo } from "./tenant-branding.js";
+import { createStaffApi } from "./staff-api.js";
+import { createGuestApi } from "./guest-api.js";
 
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -55,9 +57,9 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
   async function session(req: Request, res: Response) {
     const workspace = await tenant(res);
     const value = token(req);
-    const found = value ? await db.session.findFirst({ where: { tokenHash: digest(value), tenantId: workspace.id, expiresAt: { gt: new Date() } }, include: { account: { select: { id: true, name: true, email: true, role: true } } } }) : null;
+    const found = value ? await db.session.findFirst({ where: { tokenHash: digest(value), tenantId: workspace.id, expiresAt: { gt: new Date() }, account: { active: true } }, include: { account: { select: { id: true, name: true, email: true, role: true, assignments: { select: { role: true, venueId: true, storefrontId: true } } } } } }) : null;
     if (!found) throw new HttpError(401, "Sign in to this workspace");
-    return { tenant: workspace, user: { ...found.account, venueIds: [] } };
+    return { tenant: workspace, user: { ...found.account, venueIds: found.account.assignments.flatMap(a => a.venueId ? [a.venueId] : []) } };
   }
   const cookieOptions = { httpOnly: true, secure: origin.protocol === "https:", sameSite: "strict" as const, path: "/" };
   app.get("/health", run(async (_req, res) => { await db.$queryRaw`SELECT 1`; res.json({ ok: true, persistence: "postgresql", mode: "online" }); }));
@@ -79,7 +81,7 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
     const input = credentials.parse(req.body);
     const account = await db.account.findUnique({ where: { tenantId_email: { tenantId: workspace.id, email: input.email } } });
     const hash = (await derive(input.password, account?.salt ?? "missing-account", 64)) as Buffer;
-    if (!account || !timingSafeEqual(hash, Buffer.from(account.passwordHash, "hex"))) throw new HttpError(401, "Email or password is incorrect");
+    if (!account || !account.active || !timingSafeEqual(hash, Buffer.from(account.passwordHash, "hex"))) throw new HttpError(401, "Email or password is incorrect");
     const value = randomBytes(32).toString("hex");
     await db.session.create({ data: { tokenHash: digest(value), tenantId: workspace.id, accountId: account.id, expiresAt: new Date(Date.now() + 12 * 60 * 60_000) } });
     res.cookie(cookieName, value, { ...cookieOptions, maxAge: 12 * 60 * 60_000 });
@@ -91,6 +93,8 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
     await db.session.deleteMany({ where: { tokenHash: digest(token(req)), tenantId: workspace.id } });
     res.clearCookie(cookieName, cookieOptions).json({ ok: true });
   }));
+  app.use("/api/guest", createGuestApi(db, tenant));
+  app.use("/api/staff", createStaffApi(db, session));
   app.use("/api", createWorkspaceApi(db, session));
   app.get("/", run(async (_req, res) => {
     if (res.locals.slug) await tenant(res);
@@ -101,7 +105,7 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
   app.use((_req, res) => res.status(404).json({ error: "Not found" }));
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof z.ZodError) { res.status(422).json({ error: error.issues.map(issue => issue.message).join(". ") }); return; }
-    if (error instanceof HttpError || error instanceof WorkspaceError) { res.status(error.status).json({ error: error.message }); return; }
+    if (error instanceof HttpError || error instanceof WorkspaceError) { res.status(error.status).json({ error: error.message, ...(error instanceof WorkspaceError && error.action ? { action: error.action } : {}) }); return; }
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { res.status(409).json({ error: "That subdomain or account already exists" }); return; }
     if (error instanceof SyntaxError) { res.status(400).json({ error: "Invalid JSON" }); return; }
     console.error("Online request failed", error instanceof Error ? error.name : "Unknown error");

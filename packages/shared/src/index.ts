@@ -198,6 +198,10 @@ export type Order = {
   origin: OrderOrigin;
   status: OrderStatus;
   customerName?: string;
+  customerPhone?: string;
+  customerEmail?: string;
+  customerId?: string;
+  customerLinkStatus?: "created" | "matched" | "anonymous" | "conflict";
   customerProfileId?: Id;
   promotionId?: Id;
   deliveryStatus?: DeliveryRoute["status"];
@@ -396,6 +400,7 @@ export type ChargeLine = {
 };
 
 export type HubSnapshot = {
+  onlinePermissions?: Record<string, string[]>;
   event: Event;
   operatingPeriods: OperatingPeriod[];
   vendors: Vendor[];

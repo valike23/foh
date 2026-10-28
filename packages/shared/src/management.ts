@@ -33,8 +33,9 @@ export type ManagementUser = {
   id: string;
   name: string;
   email: string;
-  role: "owner" | "manager" | "viewer";
+  role: "owner" | "manager" | "viewer" | "staff";
   venueIds: string[];
+  assignments?: { role: "venue-manager" | "storefront-manager" | "cashier" | "waiter" | "prep" | "runner" | "viewer"; venueId: string | null; storefrontId: string | null }[];
 };
 export type VenueDetail = {
   venue: ManagedVenue;

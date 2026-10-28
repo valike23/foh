@@ -106,7 +106,9 @@ try {
   await orderDialog.getByLabel("Chapman quantity", { exact: true }).fill("2");
   await orderDialog.getByRole("button", { name: "Create sale", exact: true }).click();
   await orderDialog.waitFor({ state: "hidden" });
+  await page.goto(`${tenantOrigin}/orders?operation=${venueId}`);
   await page.getByRole("button", { name: "Accept order", exact: true }).click();
+  await page.goto(`${tenantOrigin}/payments?operation=${venueId}`);
   await page.getByRole("button", { name: "Record payment", exact: true }).click();
   const payment = page.getByRole("dialog", { name: "Record payment", exact: true });
   await payment.getByRole("button", { name: "Confirm payment", exact: true }).click();

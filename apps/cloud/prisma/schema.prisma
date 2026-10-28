@@ -18,6 +18,8 @@ model Tenant {
   sessions  Session[]
   venues    Venue[]
   records   WorkspaceRecord[]
+  storefronts Storefront[]
+  customers Customer[]
 }
 
 model Account {
@@ -29,8 +31,10 @@ model Account {
   passwordHash String
   salt         String
   role         String    @default("owner")
+  active       Boolean   @default(true)
   createdAt    DateTime  @default(now())
   sessions     Session[]
+  assignments  StaffAssignment[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -59,8 +63,56 @@ model Venue {
   version   Int      @default(1)
   profile   Json     @default("{}")
   activity  Json     @default("[]")
+  storefronts Storefront[]
+  assignments StaffAssignment[]
 
   @@index([tenantId, createdAt])
+  @@unique([tenantId, id])
+}
+
+model Storefront {
+  id String @id @default(uuid())
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  venueId String?
+  venue Venue? @relation(fields: [tenantId, venueId], references: [tenantId, id], onDelete: Restrict)
+  eventId String?
+  vendorId String
+  name String
+  kind String
+  status String @default("draft")
+  version Int @default(1)
+  prepStation String @default("")
+  manualConfirmation Boolean @default(false)
+  fulfillment String
+  sectionIds String[]
+  commercialTerms String @default("")
+  notes String @default("")
+  qrToken String?
+  legacyStoreId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  assignments StaffAssignment[]
+  customerOrders CustomerOrder[]
+  @@unique([tenantId, id])
+  @@index([tenantId, venueId])
+  @@index([tenantId, eventId])
+}
+
+model StaffAssignment {
+  id String @id @default(uuid())
+  tenantId String
+  accountId String
+  account Account @relation(fields: [tenantId, accountId], references: [tenantId, id], onDelete: Cascade)
+  role String
+  venueId String?
+  venue Venue? @relation(fields: [tenantId, venueId], references: [tenantId, id], onDelete: Cascade)
+  storefrontId String?
+  storefront Storefront? @relation(fields: [tenantId, storefrontId], references: [tenantId, id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@index([tenantId, accountId])
+  @@unique([tenantId, accountId, venueId, role], map: "StaffAssignment_venue_role_key")
+  @@unique([tenantId, accountId, storefrontId, role], map: "StaffAssignment_storefront_role_key")
 }
 
 model WorkspaceRecord {
@@ -70,6 +122,51 @@ model WorkspaceRecord {
   id       String @default(uuid())
   version  Int    @default(1)
   data     Json
+  customerOrders CustomerOrder[]
 
   @@id([tenantId, kind, id])
+}
+
+model Customer {
+  id String @id @default(uuid())
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name String?
+  phone String?
+  email String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  orders CustomerOrder[]
+  browsers CustomerBrowser[]
+  @@unique([tenantId, id])
+  @@unique([tenantId, phone])
+  @@unique([tenantId, email])
+}
+
+model CustomerBrowser {
+  tenantId String
+  browserHash String
+  customerId String
+  customer Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  lastSeenAt DateTime @default(now()) @updatedAt
+  @@id([tenantId, browserHash])
+  @@index([tenantId, customerId])
+}
+
+// Orders currently live inside an operation snapshot. This relation preserves
+// database-backed customer ownership without duplicating mutable order totals.
+model CustomerOrder {
+  tenantId String
+  orderId String
+  customerId String
+  customer Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+  storefrontId String
+  storefront Storefront @relation(fields: [tenantId, storefrontId], references: [tenantId, id], onDelete: Cascade)
+  operationId String
+  runtimeKind String @default("runtime")
+  runtime WorkspaceRecord @relation(fields: [tenantId, runtimeKind, operationId], references: [tenantId, kind, id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@id([tenantId, orderId])
+  @@index([tenantId, customerId, createdAt])
 }

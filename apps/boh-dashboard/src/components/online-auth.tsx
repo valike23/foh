@@ -62,7 +62,7 @@ export function OnlineAuth({ signup = false }: { signup?: boolean }) {
       } else {
         await managementApi("/auth/login", { method: "POST", body: JSON.stringify(data) });
         const next = new URLSearchParams(window.location.search).get("next") ?? "/dashboard";
-        router.replace(/^\/((dashboard|venues|events|vendors|storefronts|floor|operations|service|overview|sales|stock|floor-control)(?:\/|\?|$)|settings\/account$)/.test(next) ? next : "/dashboard"); router.refresh();
+        router.replace(/^\/((dashboard|venues|events|vendors|storefronts|floor|operations|service|overview|sales|payments|orders|stock|floor-control)(?:\/|\?|$)|settings\/account$)/.test(next) ? next : "/dashboard"); router.refresh();
       }
     } catch (error) { setError((error as Error).message); } finally { setBusy(false); }
   }

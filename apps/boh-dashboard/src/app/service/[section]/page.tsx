@@ -13,7 +13,7 @@ export default async function Page({ params, searchParams }: {
   const { operation } = await searchParams;
   if (!operation) redirect("/operations");
   if (isOnlineWorkspace((await headers()).get("host") ?? "")) {
-    const target = ["setup", "inventory"].includes(section) ? "stock" : ["payments", "staff-order", "prep", "ledger"].includes(section) ? "sales" : ["tables", "runner"].includes(section) ? "floor-control" : "overview";
+    const target = ["setup", "inventory"].includes(section) ? "stock" : ["payments", "ledger"].includes(section) ? "payments" : section === "prep" ? "orders" : section === "staff-order" ? "sales" : ["tables", "runner"].includes(section) ? "floor-control" : "overview";
     redirect(`/${target}?operation=${encodeURIComponent(operation)}`);
   }
   return <BohDashboardApp key={`${operation}:${section}`} page={section} />;

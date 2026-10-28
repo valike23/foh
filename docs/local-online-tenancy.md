@@ -24,12 +24,14 @@ After login, the original dark management workspace opens at **Dashboard**, with
 
 - Dashboard shows business-wide venue/event/live-service counts, a selected service?s sales, collected payments, outstanding balances, quarter-hour activity, alerts and recent sales. New workspaces show setup actions and real zero totals. It inherits tenant branding and refreshes selected-service records through the authenticated APIs.
 - Overview shows service totals, recorded payment methods, recent sales, low-stock alerts, tables and staff sales from the selected operation. Empty workspaces have setup guidance, not seeded sample revenue.
-- Sales creates staff orders, accepts orders awaiting confirmation, displays receipts and records cash, card/POS or bank-transfer payments.
+- Sales creates staff orders and displays receipts. Orders handles acceptance and preparation/service status. Payments records cash, card/POS or bank-transfer payments and displays payment history. These are separate screens, with navigation and available actions based on staff assignments.
 - Stock creates menu items and records quantity adjustments with a reason.
 - Floor control shows tables, current-service balances and their sales.
 - Existing management pages remain in the original sidebar. The supplementary operational pages are reached through service workflows rather than a replacement top navigation.
 
 Create a venue or event, create and activate its vendor and storefront, and configure any sections/tables. Publish the operation under Service operations. Add menu items in Stock, then open service under Service operations. Open a published operation from Service operations. On-screen totals are scoped to the current or most recent operating period.
+
+To change a published floor layout, pause service first (or edit during setup/after closing). A blocked floor form includes **Manage this operation**, opening the relevant Service operations entry in a new tab while preserving the form. Pause, return and save the floor changes, then resume service. Floor changes update the published sections/tables/seats atomically and preserve orders, menu, stock, payments, table states and waiter assignments. Referenced tables/seats cannot be removed or moved across storefronts/tables, and active child locations cannot be orphaned. Published storefront configuration remains locked.
 
 ## Optional organization branding
 
@@ -41,7 +43,7 @@ Both fields are optional. Existing organizations and new signups without brandin
 
 ## Storage and isolation
 
-Tenant accounts, password hashes, sessions and venues live in PostgreSQL through Prisma. Existing venue forms keep their full profile, opening hours and status. Events, vendors, storefronts, floor configuration and published service snapshots use tenant-scoped WorkspaceRecord rows with JSONB data. Their domain shape remains compatible with the on-site snapshot; this is not yet a fully normalized transactional schema.
+Tenant accounts, password hashes, sessions, venues, storefronts and staff assignments live in dedicated PostgreSQL tables through Prisma. Existing venue forms keep their full profile, opening hours and status. Events, vendors, floor configuration and published service snapshots use tenant-scoped WorkspaceRecord rows with JSONB data. Their domain shape remains compatible with the on-site snapshot; this is not yet a fully normalized transactional schema. Owners configure scoped staff roles under Account & access; see [Storefronts and roles](storefronts-and-roles.md) for the permission matrix and migration details.
 
 All online requests go through the main app's same-origin API proxy, which preserves the original Host and forwards only the required cookies and headers. The backend resolves tenant identity from the exact configured subdomain. Every record lookup and mutation is tenant scoped. Cookies are HTTP-only, host-only and SameSite Strict, with Secure enabled under HTTPS. Mutations require the matching Origin. Runtime writes use database transactions and revision checks; competing requests cannot overwrite stock or duplicate a completed payment.
 
