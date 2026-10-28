@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
+    "prebuild": "npm run build --workspace @exa-foh/shared",
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "postinstall": "prisma generate",

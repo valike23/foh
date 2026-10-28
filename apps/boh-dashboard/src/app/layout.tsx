@@ -13,7 +13,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const online = isOnlineWorkspace((await headers()).get("host") ?? "");
   return (
     <html lang="en" className="dark">
-      <body><DeploymentProvider online={online}>{children}</DeploymentProvider></body>
+      <body><DeploymentProvider online={online} singleHost={process.env.TENANT_ROUTING_MODE === "single-host"}>{children}</DeploymentProvider></body>
     </html>
   );
 }

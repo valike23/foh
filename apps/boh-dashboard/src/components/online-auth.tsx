@@ -3,16 +3,17 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowRight, ArrowUpRight, Check, ChevronDown, Eye, EyeOff, Layers3, LoaderCircle, Palette, ShieldCheck, Upload, X } from "lucide-react";
 import { Button } from "@exa-foh/ui";
 import { managementApi } from "../lib/management-api";
 import { brandPresets, tenantBrandStyle, type TenantBrand } from "../lib/tenant-branding";
-import { useOnlineWorkspace } from "./deployment-context";
+import { useOnlineWorkspace, useSingleHostWorkspace } from "./deployment-context";
 import "./tenant-auth.css";
 
 export function OnlineAuth({ signup = false }: { signup?: boolean }) {
-  const router = useRouter(); const online = useOnlineWorkspace();
+  const router = useRouter(); const online = useOnlineWorkspace(); const singleHost = useSingleHostWorkspace(); const params = useSearchParams();
+  const selectedWorkspace = params.get("workspace"); const centralRequested = signup || params.get("central") === "1";
   const [tenant, setTenant] = useState<TenantBrand | null>(null);
   const [ready, setReady] = useState(false); const [busy, setBusy] = useState(false);
   const [error, setError] = useState(""); const [workspace, setWorkspace] = useState("");
@@ -25,13 +26,14 @@ export function OnlineAuth({ signup = false }: { signup?: boolean }) {
   useEffect(() => {
     if (!online) { router.replace("/login"); return; }
     let active = true;
-    managementApi<{ tenant: TenantBrand | null }>("/tenant").then(value => {
+    const query = singleHost ? centralRequested ? "?central=1" : selectedWorkspace ? `?workspace=${encodeURIComponent(selectedWorkspace)}` : "" : "";
+    managementApi<{ tenant: TenantBrand | null }>(`/tenant${query}`).then(value => {
       if (!active) return;
       if (signup && value.tenant) { router.replace("/login"); return; }
       setTenant(value.tenant); setReady(true);
     }).catch(error => { if (active) setError(error.message); });
     return () => { active = false; logoRead.current++; };
-  }, [online, router, signup]);
+  }, [online, router, signup, singleHost, selectedWorkspace, centralRequested]);
 
   async function chooseLogo(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]; if (!file) return;
@@ -55,12 +57,12 @@ export function OnlineAuth({ signup = false }: { signup?: boolean }) {
     try {
       const data = Object.fromEntries(new FormData(event.currentTarget));
       if (signup) {
-        const result = await managementApi<{ workspaceUrl: string }>("/auth/signup", {
+        const result = await managementApi<{ workspaceUrl: string; loginUrl?: string }>("/auth/signup", {
           method: "POST", body: JSON.stringify({ ...data, ...(brandColor ? { brandColor } : {}), ...(brandLogo ? { brandLogo } : {}) })
         });
-        setDestination(`${result.workspaceUrl}/login`);
+        setDestination(result.loginUrl ?? `${result.workspaceUrl}/login`);
       } else {
-        await managementApi("/auth/login", { method: "POST", body: JSON.stringify(data) });
+        await managementApi(`/auth/login${singleHost && selectedWorkspace ? `?workspace=${encodeURIComponent(selectedWorkspace)}` : ""}`, { method: "POST", body: JSON.stringify(data) });
         const next = new URLSearchParams(window.location.search).get("next") ?? "/dashboard";
         router.replace(/^\/((dashboard|venues|events|vendors|storefronts|floor|operations|service|overview|sales|payments|orders|stock|floor-control)(?:\/|\?|$)|settings\/account$)/.test(next) ? next : "/dashboard"); router.refresh();
       }
@@ -70,6 +72,7 @@ export function OnlineAuth({ signup = false }: { signup?: boolean }) {
     event.preventDefault(); setError("");
     if (!/^[a-z][a-z0-9-]{1,46}[a-z0-9]$/.test(workspace)) { setError("Enter your workspace subdomain, for example gwx."); return; }
     const destination = new URL(window.location.href);
+    if (singleHost) { destination.pathname = "/login"; destination.search = ""; destination.searchParams.set("workspace", workspace); window.location.assign(destination); return; }
     destination.hostname = `${workspace}.${window.location.hostname.replace(/^app\./, "")}`;
     destination.pathname = "/login"; destination.search = ""; window.location.assign(destination);
   }
@@ -105,7 +108,7 @@ export function OnlineAuth({ signup = false }: { signup?: boolean }) {
           <Button className="tenant-auth-submit">Continue<ArrowRight size={16} /></Button><p className="tenant-auth-switch">New to EXA? <Link href="/signup">Create a workspace</Link></p>
         </form> : <form className="tenant-auth-fields" onSubmit={submit}>
           <fieldset disabled={busy}>
-            {signup && <><label className="field-label">Organization name<input name="organizationName" className="field" placeholder="Your business name" autoComplete="organization" required minLength={2} maxLength={100} value={organizationName} onChange={e => setOrganizationName(e.target.value)} /></label><label className="field-label">Workspace subdomain<input name="slug" className="field" placeholder="e.g. gwx" required pattern="[a-z][a-z0-9-]{1,46}[a-z0-9]" minLength={3} maxLength={48} autoComplete="off" /><span className="tenant-auth-hint">Your unique workspace address. Lowercase letters, numbers and hyphens.</span></label><label className="field-label">Full name<input name="name" className="field" placeholder="Your full name" autoComplete="name" required minLength={2} maxLength={100} /></label></>}
+            {signup && <><label className="field-label">Organization name<input name="organizationName" className="field" placeholder="Your business name" autoComplete="organization" required minLength={2} maxLength={100} value={organizationName} onChange={e => setOrganizationName(e.target.value)} /></label><label className="field-label">{singleHost ? "Workspace name" : "Workspace subdomain"}<input name="slug" className="field" placeholder="e.g. gwx" required pattern="[a-z][a-z0-9-]{1,46}[a-z0-9]" minLength={3} maxLength={48} autoComplete="off" /><span className="tenant-auth-hint">Your unique workspace address. Lowercase letters, numbers and hyphens.</span></label><label className="field-label">Full name<input name="name" className="field" placeholder="Your full name" autoComplete="name" required minLength={2} maxLength={100} /></label></>}
             <label className="field-label">Email<input name="email" type="email" className="field" placeholder="you@yourbusiness.com" autoComplete="username" required maxLength={254} /></label>
             <label className="field-label">Password<span className="tenant-password-field"><input name="password" type={showPassword ? "text" : "password"} className="field" placeholder={signup ? "Create a strong password" : "Enter your password"} autoComplete={signup ? "new-password" : "current-password"} minLength={12} maxLength={128} required /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span></label>
             {signup && <><p className="tenant-auth-hint">Use at least 12 characters for your password.</p><details className="tenant-branding-options"><summary><span><Palette size={17} /><span>Make it yours <small>Optional branding</small></span></span><ChevronDown size={15} /></summary><div className="tenant-branding-body"><p>A little you, everywhere. Preview your login and workspace branding on the left.</p>
@@ -118,7 +121,7 @@ export function OnlineAuth({ signup = false }: { signup?: boolean }) {
             </div></details></>}
             <Button className="tenant-auth-submit" disabled={busy || !ready || uploading}>{busy ? "Please wait…" : signup ? "Create workspace" : "Sign in"}<ArrowRight size={16} /></Button>
           </fieldset>
-          {signup ? <p className="tenant-auth-switch">Already have a workspace? <Link href="/login">Sign in</Link></p> : <p className="tenant-auth-help"><ShieldCheck size={13} />Your organization’s secure workspace</p>}
+          {signup ? <p className="tenant-auth-switch">Already have a workspace? <Link href="/login">Sign in</Link></p> : <><p className="tenant-auth-help"><ShieldCheck size={13} />Your organization’s secure workspace</p>{singleHost && <p className="tenant-auth-switch"><Link href="/login?central=1">Switch workspace</Link></p>}</>}
         </form>}
         {error && <p role="alert" className="tenant-auth-error">{error}</p>}
         <footer className="tenant-auth-form-footer">Powered by EXA <span>Built for your business.</span></footer>
