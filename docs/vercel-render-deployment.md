@@ -19,10 +19,10 @@ Use the repository root (leave Root Directory blank), and deploy the branch cont
 Build command:
 
 ```sh
-npm ci --include=dev && npm run build --workspace @exa-foh/cloud
+npm ci --include=dev && npm run build --workspace @exa-foh/shared && npm run build --workspace @exa-foh/cloud
 ```
 
-The cloud prebuild builds `@exa-foh/shared`. Development dependencies are included because TypeScript and the Prisma CLI are needed during build/schema deployment.
+The backend build explicitly builds `@exa-foh/shared` before TypeScript rather than relying on a prebuild hook. The Render command also names the shared build so its order is visible in deployment logs. Development dependencies are included because TypeScript and the Prisma CLI are needed during build/schema deployment. The repository pins the tested Node 22 release line; set `NODE_VERSION=22.22.2` explicitly on Render as shown below.
 
 Start command:
 
