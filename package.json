@@ -23,7 +23,7 @@
     "verify:phase0": "npm run typecheck && npm run build"
   },
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.5 <23"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
