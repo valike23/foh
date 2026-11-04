@@ -13,8 +13,11 @@ const password = "browser-staff-password-123";
 async function api(path, body, method = "POST") {
   const r = await page.evaluate(async ({ path, body, method }) => { const r = await fetch(`/api/manage${path}`, { method, headers: { "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }); return { status: r.status, data: await r.json() }; }, { path, body, method }); assert.ok(r.status < 300, `${path}: ${JSON.stringify(r)}`); return r.data;
 }
+let ownerSetupPaused = false;
 async function login(email) {
-  await page.goto(`${tenant}/login`); await page.getByLabel("Email", { exact: true }).fill(email); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click(); await page.waitForURL("**/dashboard");
+  await page.goto(`${tenant}/login`); await page.getByLabel("Email", { exact: true }).fill(email); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  if (email === "owner@test.example" && !ownerSetupPaused) { await page.waitForURL("**/dashboard"); await page.getByRole("button", { name: "Continue onboarding", exact: true }).click(); await expect(page.getByRole("dialog", { name: "Business onboarding", exact: true })).toBeVisible(); await page.getByRole("button", { name: /A physical location/ }).click(); await page.getByRole("button", { name: "Save & finish later", exact: true }).click(); ownerSetupPaused = true; }
+  await page.waitForURL("**/dashboard");
 }
 try {
   await page.goto(`${origin}/signup`);
@@ -52,11 +55,11 @@ try {
   await page.goto(`${tenant}/sales?operation=${venue.id}`); await expect(page.getByRole("button", { name: "New sale", exact: true })).toBeDisabled(); await expect(page.getByRole("button", { name: "Record payment", exact: true })).toHaveCount(0); await expect(page.getByText("Restricted", { exact: true }).first()).toBeVisible();
   await page.goto(`${tenant}/stock?operation=${venue.id}`); await expect(page.getByRole("button", { name: "Add menu item", exact: true })).toBeDisabled();
   await api("/auth/logout", {}); await login("manager@test.example"); await page.goto(`${tenant}/operations`); await expect(page.getByRole("button", { name: "Pause", exact: true })).toBeVisible();
-  await page.goto(`${tenant}/floor/new?scopeType=venue&scopeId=${venue.id}`); await page.getByLabel("Location label", { exact: true }).fill("Garden seating"); await page.getByRole("button", { name: "Create floor location", exact: true }).click();
+  await page.goto(`${tenant}/floor/new?scopeType=venue&scopeId=${venue.id}`); await page.getByLabel("Location label", { exact: true }).fill("Garden seating"); await page.getByRole("button", { name: "Create section or table", exact: true }).click();
   const fixLink = page.getByRole("link", { name: "Manage this operation", exact: true }); await expect(fixLink).toBeVisible(); await expect(fixLink).toHaveAttribute("href", `/operations?operation=${venue.id}`);
   const [operationTab] = await Promise.all([page.waitForEvent("popup"), fixLink.click()]); operationTab.on("pageerror", e => errors.push(e.message)); await operationTab.waitForLoadState(); await operationTab.getByRole("button", { name: "Pause", exact: true }).click();
   const pauseDialog = operationTab.getByRole("dialog"); await pauseDialog.getByLabel("Reason", { exact: true }).fill("Update floor layout"); await pauseDialog.getByRole("button", { name: "Pause orders", exact: true }).click(); await expect(operationTab.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
-  await expect(page.getByLabel("Location label", { exact: true })).toHaveValue("Garden seating"); await page.getByRole("button", { name: "Create floor location", exact: true }).click(); await page.waitForURL("**/floor/*"); await expect(page.getByRole("heading", { name: "Garden seating", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Location label", { exact: true })).toHaveValue("Garden seating"); await page.getByRole("button", { name: "Create section or table", exact: true }).click(); await page.waitForURL("**/floor/*"); await expect(page.getByRole("heading", { name: "Garden seating", exact: true })).toBeVisible();
   await operationTab.reload(); await operationTab.getByRole("button", { name: "Resume", exact: true }).click(); const resumeDialog = operationTab.getByRole("dialog"); await resumeDialog.getByLabel("Reason", { exact: true }).fill("Floor layout ready"); await resumeDialog.getByRole("button", { name: "Open service", exact: true }).click(); await expect(operationTab.getByRole("button", { name: "Pause", exact: true })).toBeVisible(); await operationTab.close();
   const refreshedFloor = await api(`/service/${venue.id}/api/snapshot`, undefined, "GET"); assert.ok(refreshedFloor.sections.some(s => s.label === "Garden seating")); assert.equal(refreshedFloor.orders.length, 1); assert.equal(refreshedFloor.payments.length, 1);
   await page.goto(`${tenant}/storefronts`); await expect(page.getByRole("link", { name: "Kitchen", exact: true })).toBeVisible();

@@ -42,14 +42,14 @@ export async function verifyBusinessFlow(page, artifacts) {
   }
   await page.goto(`${origin}/floor/new?scopeType=event&scopeId=${eventId}`);
   await page.getByLabel("Location label", { exact: true }).fill("Terrace");
-  await page.getByRole("button", { name: "Create floor location", exact: true }).click();
+  await page.getByRole("button", { name: "Create section or table", exact: true }).click();
   await page.getByRole("heading", { name: "Terrace", exact: true }).waitFor();
   await page.goto(`${origin}/floor/new?scopeType=event&scopeId=${eventId}`);
   await page.getByLabel("Location label", { exact: true }).fill("Table 01");
   await page.getByLabel("Location type", { exact: true }).selectOption("table");
   await page.getByLabel("Section", { exact: true }).selectOption({ label: "Terrace" });
   await page.getByLabel("Storefront", { exact: true }).selectOption({ label: "Rooftop Bar" });
-  await page.getByRole("button", { name: "Create floor location", exact: true }).click();
+  await page.getByRole("button", { name: "Create section or table", exact: true }).click();
   await page.getByRole("heading", { name: "Table 01", exact: true }).waitFor();
   const tableUrl = page.url();
   await page.getByRole("link", { name: "QR code", exact: true }).click();

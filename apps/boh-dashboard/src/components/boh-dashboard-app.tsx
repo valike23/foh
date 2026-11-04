@@ -1274,7 +1274,7 @@ function AdvancedVenueConsole({ snapshot, run }: { snapshot: HubSnapshot; run: (
 
   return (
     <div className="grid gap-4">
-      <Button variant="outline" asChild><Link href={`/floor?scopeType=${snapshot.event.containerType}&scopeId=${snapshot.event.id}`}>Floor & QR</Link></Button>
+      <Button variant="outline" asChild><Link href={`/floor?scopeType=${snapshot.event.containerType}&scopeId=${snapshot.event.id}`}>Sections</Link></Button>
 
       <div className="grid gap-3 rounded-xl border border-border bg-white/[0.03] p-4">
         <strong className="flex items-center gap-2"><TicketPercent size={16} />Promotion</strong>

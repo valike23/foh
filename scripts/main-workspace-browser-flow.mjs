@@ -62,10 +62,12 @@ try {
   await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
   await page.getByLabel("Password", { exact: true }).fill("browser-password-1234");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.waitForURL("**/dashboard"); await page.getByRole("button", { name: "Continue onboarding", exact: true }).click(); await expect(page.getByRole("dialog", { name: "Business onboarding", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /A physical location/ }).click(); await page.getByRole("button", { name: "Save & finish later", exact: true }).click();
   await page.waitForURL("**/dashboard");
   console.log("Browser: tenant signup and login passed");
   const navigation = page.getByRole("navigation", { name: "Main navigation", exact: true });
-  for (const name of ["Dashboard", "Venues", "Events", "Vendors", "Storefronts", "Floor & QR", "Account & access", "Service operations"]) await navigation.getByRole("link", { name, exact: true }).waitFor();
+  for (const name of ["Dashboard", "Venues", "Sections", "Account & access", "Service operations"]) await navigation.getByRole("link", { name, exact: true }).waitFor();
   await page.getByRole("img", { name: "Browser verification venue logo", exact: true }).waitFor();
   assert.equal(await page.locator(".tenant-branded").evaluate(node => getComputedStyle(node).getPropertyValue("--tenant-brand-color").trim()), "#2563eb");
   await page.getByRole("heading", { name: "Your next great service starts here.", exact: true }).waitFor();
@@ -163,6 +165,8 @@ try {
   await page.getByLabel("Email", { exact: true }).fill("owner@example.test");
   await page.getByLabel("Password", { exact: true }).fill("browser-password-1234");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.waitForURL("**/dashboard"); await page.getByRole("button", { name: "Continue onboarding", exact: true }).click(); await expect(page.getByRole("dialog", { name: "Business onboarding", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /A physical location/ }).click(); await page.getByRole("button", { name: "Save & finish later", exact: true }).click();
   await page.waitForURL("**/dashboard");
   assert.equal(await page.locator(".tenant-branded").count(), 0);
   await page.getByRole("img", { name: "EXA", exact: true }).waitFor();

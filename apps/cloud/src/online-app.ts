@@ -8,6 +8,8 @@ import { createWorkspaceApi, WorkspaceError } from "./workspace-api.js";
 import { brandingSchema, normalizeBrandLogo } from "./tenant-branding.js";
 import { createStaffApi } from "./staff-api.js";
 import { createGuestApi } from "./guest-api.js";
+import { createOnboardingApi, initialOnboarding } from "./onboarding-api.js";
+import { createPreferencesApi } from "./preferences-api.js";
 
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -92,7 +94,7 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
     catch (error) { throw new HttpError(422, (error as Error).message); }
     const salt = randomBytes(16).toString("hex");
     const passwordHash = ((await derive(input.password, salt, 64)) as Buffer).toString("hex");
-    const created = await db.tenant.create({ data: { name: input.organizationName, slug: input.slug, brandColor: input.brandColor?.toLowerCase() ?? null, brandLogo, accounts: { create: { name: input.name, email: input.email, salt, passwordHash } } }, select: { id: true, slug: true, name: true } });
+    const created = await db.tenant.create({ data: { name: input.organizationName, slug: input.slug, brandColor: input.brandColor?.toLowerCase() ?? null, brandLogo, accounts: { create: { name: input.name, email: input.email, salt, passwordHash } }, records: { create: { kind: "onboarding", id: "setup", data: initialOnboarding } } }, select: { id: true, slug: true, name: true } });
     const destination = new URL(`${origin.protocol}//${req.headers.host}`);
     if (singleHost) res.status(201).json({ tenant: created, workspaceUrl: destination.origin, loginUrl: `${destination.origin}/login?workspace=${created.slug}` });
     else { destination.hostname = `${created.slug}.${options.baseDomain}`; res.status(201).json({ tenant: created, workspaceUrl: destination.origin }); }
@@ -109,7 +111,13 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
     if (singleHost) res.cookie("exa-workspace", workspace.slug, { ...cookieOptions, maxAge: 365 * 24 * 60 * 60_000 });
     res.json({ user: { id: account.id, name: account.name, email: account.email, role: account.role }, tenant: workspace });
   }));
-  app.get("/api/auth/session", run(async (req, res) => { res.json(await session(req, res)); }));
+  app.get("/api/auth/session", run(async (req, res) => {
+    const identity = await session(req, res);
+    const setup = await db.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId: identity.tenant.id, kind: "onboarding", id: "setup" } } });
+    const mode = (setup?.data as any)?.answers?.mode;
+    const preferences = await db.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId: identity.tenant.id, kind: "user-preferences", id: identity.user.id } } });
+    res.json({ ...identity, workspaceMode: ["location", "organiser", "vendor"].includes(mode) ? mode : null, workspaceSetupStarted: !!setup, navigationView: (preferences?.data as any)?.navigationView ?? null });
+  }));
   app.post("/api/auth/logout", run(async (req, res) => {
     const workspace = await tenant(res);
     await db.session.deleteMany({ where: { tokenHash: digest(token(req)), tenantId: workspace.id } });
@@ -117,6 +125,8 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
   }));
   app.use("/api/guest", createGuestApi(db, tenant));
   app.use("/api/staff", createStaffApi(db, session));
+  app.use("/api/onboarding", createOnboardingApi(db, session));
+  app.use("/api/preferences", createPreferencesApi(db, session));
   app.use("/api", createWorkspaceApi(db, session));
   app.get("/", run(async (_req, res) => {
     if (res.locals.slug) await tenant(res);
