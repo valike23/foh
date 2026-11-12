@@ -1,0 +1,56 @@
+import "dotenv/config";
+import test from "node:test";
+import assert from "node:assert/strict";
+import { randomUUID, randomBytes, scryptSync } from "node:crypto";
+import { PrismaClient } from "@prisma/client";
+import { createOnlineApp } from "../dist/online-app.js";
+import { provisionSnapshot } from "../dist/workspace-runtime.js";
+import { storefrontRecord } from "../dist/storefront-repository.js";
+import { fetchWithHost as fetch } from "./http-helper.mjs";
+
+test("POS login is separate; scoped cashier sales and payments are retry safe", { skip: !process.env.DATABASE_URL }, async t => {
+  const db = new PrismaClient(), slug = `pos-${randomUUID().slice(0, 8)}`, password = "pos-test-password-123", salt = randomBytes(16).toString("hex");
+  const tenant = await db.tenant.create({ data: { slug, name: "POS test", accounts: { create: ["owner", "staff"].map(role => ({ name: role, email: `${role}@example.test`, role, salt, passwordHash: scryptSync(password, salt, 64).toString("hex") })) } } });
+  const server = createOnlineApp(db, { baseDomain: "localhost", publicOrigin: "http://app.localhost:4200" }).listen(0, "127.0.0.1");
+  await new Promise(resolve => server.once("listening", resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await db.tenant.delete({ where: { id: tenant.id } }); await db.$disconnect(); });
+  const venue = await db.venue.create({ data: { tenantId: tenant.id, name: "Main branch" } });
+  const store = await db.storefront.create({ data: { tenantId: tenant.id, venueId: venue.id, vendorId: "house", name: "Counter", kind: "kitchen", fulfillment: "pickup", manualConfirmation: true, sectionIds: [], status: "active" } });
+  const staff = await db.account.findUnique({ where: { tenantId_email: { tenantId: tenant.id, email: "staff@example.test" } } });
+  await db.staffAssignment.create({ data: { tenantId: tenant.id, accountId: staff.id, storefrontId: store.id, role: "cashier" } });
+  const snapshot = provisionSnapshot(venue, "venue", [storefrontRecord(store)], [{ id: "house", name: "House", kind: "internal" }], []);
+  snapshot.event.status = "live"; snapshot.menuItems.push({ id: "rice", storeId: store.id, name: "Jollof rice", category: "Food", price: 2500, stockItemId: "stock", available: true, modifiers: [] }); snapshot.inventory.push({ id: "stock", storeId: store.id, name: "Rice", quantity: 10, unit: "plates", lowStockThreshold: 2 });
+  await db.workspaceRecord.create({ data: { tenantId: tenant.id, kind: "runtime", id: venue.id, data: snapshot } });
+  async function request(path, body, cookie) {
+    const host = `${slug}.localhost:4200`;
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api${path}`, { method: body ? "POST" : "GET", headers: { host, origin: `http://${host}`, "Content-Type": "application/json", ...(cookie ? { cookie } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    return { status: response.status, data: await response.json(), cookie: response.headers.get("set-cookie")?.split(";")[0] };
+  }
+  const dashboard = await request("/auth/login", { email: "owner@example.test", password }); assert.equal(dashboard.status, 200);
+  assert.equal((await request("/pos/auth/session", undefined, dashboard.cookie)).status, 401);
+  const login = await request("/pos/auth/login", { email: "staff@example.test", password }); assert.equal(login.status, 200); assert.match(login.cookie, /^exa-pos-session=/);
+  assert.equal((await request("/auth/session", undefined, login.cookie)).status, 401);
+  const cookie = login.cookie, path = `/pos/operations/${venue.id}/service`;
+  const sale = { requestId: randomUUID(), storeId: store.id, lines: [{ menuItemId: "rice", quantity: 2 }] };
+  const first = await request(`${path}/orders`, sale, cookie); assert.equal(first.status, 201, JSON.stringify(first));
+  assert.equal(first.data.status, "confirmed", "POS cashier sales must proceed directly to payment");
+  const retry = await request(`${path}/orders`, sale, cookie); assert.equal(retry.status, 201); assert.equal(retry.data.id, first.data.id);
+  assert.equal((await request(`${path}/orders`, { ...sale, lines: [{ menuItemId: "rice", quantity: 3 }] }, cookie)).status, 409);
+  const payment = { requestId: randomUUID(), orderId: first.data.id, amount: 5000, method: "cash" };
+  const pay = await request(`${path}/payments`, payment, cookie); assert.equal(pay.status, 201);
+  assert.equal((await request(`${path}/payments`, payment, cookie)).data.id, pay.data.id);
+  assert.equal((await request(`${path}/payments`, { ...payment, amount: 4000 }, cookie)).status, 409);
+  const saved = await request(`${path}/snapshot`, undefined, cookie); assert.equal(saved.data.inventory[0].quantity, 8); assert.equal(saved.data.orders.length, 1); assert.equal(saved.data.payments.length, 1); assert.equal(saved.data.orders[0].status, "settled");
+  const pending = await request(`/operations/${venue.id}/service/orders`, { storeId: store.id, lines: [{ menuItemId: "rice", quantity: 1 }] }, dashboard.cookie);
+  assert.equal(pending.data.status, "sent", "ordinary orders still require confirmation");
+  const pendingPayment = { requestId: randomUUID(), orderId: pending.data.id, amount: 2500, method: "pos" };
+  assert.equal((await request(`${path}/payments`, pendingPayment, cookie)).status, 201);
+  assert.equal((await request(`${path}/payments`, pendingPayment, cookie)).status, 201);
+  const completed = await request(`${path}/snapshot`, undefined, cookie);
+  assert.equal(completed.data.inventory[0].quantity, 7, "paying a pending order deducts stock only once");
+  assert.equal(completed.data.orders.find(o => o.id === pending.data.id).status, "settled");
+  assert.equal(completed.data.payments.length, 2);
+  assert.equal((await request("/pos/auth/logout", {}, cookie)).status, 200);
+  assert.equal((await request("/pos/auth/session", undefined, cookie)).status, 401);
+  assert.equal((await request("/auth/session", undefined, dashboard.cookie)).status, 200);
+});

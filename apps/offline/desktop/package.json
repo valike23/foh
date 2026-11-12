@@ -1,0 +1,65 @@
+{
+    "name":  "pricemate-local-hub",
+    "version":  "0.1.0",
+    "private":  true,
+    "description":  "Local SQLite server and browser workspace for Pricemate venues",
+    "author":  "Pricemate",
+    "main":  "main.cjs",
+    "scripts":  {
+                    "dev":  "electron .",
+                    "package":  "electron-builder --win nsis"
+                },
+    "devDependencies":  {
+                            "electron":  "45.3.1",
+                            "electron-builder":  "26.18.0"
+                        },
+    "build":  {
+                  "appId":  "com.pricemate.localhub",
+                  "productName":  "Pricemate Local Hub",
+                  "asar":  true,
+                  "directories":  {
+                                      "output":  "../release"
+                                  },
+                  "files":  [
+                                "main.cjs",
+                                "icon.png",
+                                "package.json",
+                                "!node_modules{,/**/*}",
+                                "!**/.env",
+                                "!**/.env.*"
+                            ],
+                  "extraResources":  [
+                                         {
+                                             "from":  "../dist/server.cjs",
+                                             "to":  "hub/server.cjs"
+                                         },
+                                         {
+                                             "from":  "frontend",
+                                             "to":  "frontend",
+                                             "filter":  [
+                                                            "**/*",
+                                                            "!**/.env",
+                                                            "!**/.env.*",
+                                                            "!**/*.sqlite",
+                                                            "!**/*setup-key*"
+                                                        ]
+                                         }
+                                     ],
+                  "win":  {
+                              "target":  "nsis",
+                              "signAndEditExecutable":  false
+                          },
+                  "nsis":  {
+                               "oneClick":  false,
+                               "allowToChangeInstallationDirectory":  true,
+                               "createDesktopShortcut":  true,
+                               "deleteAppDataOnUninstall":  false
+                           },
+                  "electronVersion":  "45.3.1",
+                  "npmRebuild":  false,
+                  "afterPack":  "after-pack.cjs"
+              },
+    "dependencies":  {
+                         "exa-foh":  "file:../../.."
+                     }
+}

@@ -1,0 +1,70 @@
+import { config } from "dotenv";
+import { PrismaClient } from "@prisma/client";
+import { randomUUID, randomBytes, scryptSync } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import { chromium, expect } from "@playwright/test";
+import assert from "node:assert/strict";
+import { provisionSnapshot } from "../apps/cloud/dist/workspace-runtime.js";
+import { storefrontRecord } from "../apps/cloud/dist/storefront-repository.js";
+config({ path: "apps/cloud/.env", quiet: true });
+const db = new PrismaClient(), slug = `pos-ui-${randomUUID().slice(0, 8)}`, password = "pos-browser-password-123", salt = randomBytes(16).toString("hex");
+const tenant = await db.tenant.create({ data: { slug, name: "The Green Table", accounts: { create: ["owner", "cashier", "viewer"].map(role => ({ name: `${role} Staff`, email: `${role}@example.test`, role: role === "owner" ? "owner" : "staff", salt, passwordHash: scryptSync(password, salt, 64).toString("hex") })) } } });
+const browser = await chromium.launch({ headless: true, args: ["--window-size=1440,1000"] });
+const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, hasTouch: true });
+const origin = (process.env.BROWSER_APP_ORIGIN ?? "http://app.localhost:5173").replace("app.localhost", `${slug}.localhost`);
+try {
+  await mkdir("test-results/pos", { recursive: true });
+  const venue = await db.venue.create({ data: { tenantId: tenant.id, name: "Garden restaurant", status: "active" } });
+  const store = await db.storefront.create({ data: { tenantId: tenant.id, venueId: venue.id, name: "The Kitchen", vendorId: "house", kind: "kitchen", fulfillment: "table", manualConfirmation: true, sectionIds: [], status: "active" } });
+  for (const role of ["cashier", "viewer"]) {
+    const account = await db.account.findUnique({ where: { tenantId_email: { tenantId: tenant.id, email: `${role}@example.test` } } });
+    await db.staffAssignment.create({ data: { tenantId: tenant.id, accountId: account.id, storefrontId: store.id, role } });
+  }
+  const s = provisionSnapshot(venue, "venue", [storefrontRecord(store)], [{ id: "house", name: "House", kind: "internal" }], []); s.event.status = "live";
+  s.tables.push({ id: "table7", storeId: store.id, label: "Table 7", section: "Garden", status: "open", assignedWaiter: "" });
+  for (const [index, [name, category, price]] of [["Jollof rice", "Food", 2500], ["House Chapman", "Drinks", 1500], ["Grilled chicken", "Food", 4000], ["Fresh lemonade", "Drinks", 2000], ["Pasta", "Food", 3500], ["Plantain", "Food", 1200]].entries()) {
+    s.menuItems.push({ id: `item${index}`, storeId: store.id, name, category, price, stockItemId: `stock${index}`, available: true, modifiers: [] });
+    s.inventory.push({ id: `stock${index}`, storeId: store.id, name, unit: "portions", quantity: 10, lowStockThreshold: 2 });
+  }
+  await db.workspaceRecord.create({ data: { tenantId: tenant.id, kind: "runtime", id: venue.id, data: s } });
+  const dashboard = await context.newPage(); dashboard.setDefaultTimeout(30_000);
+  await dashboard.goto(`${origin}/login`);
+  await dashboard.getByLabel("Email", { exact: true }).fill("owner@example.test"); await dashboard.getByLabel("Password", { exact: true }).fill(password); await dashboard.getByRole("button", { name: "Sign in", exact: true }).click();
+  await dashboard.waitForURL("**/dashboard");
+  const launcher = dashboard.getByRole("link", { name: "POS", exact: true }); await expect(launcher).toHaveAttribute("target", "_blank");
+  const popup = context.waitForEvent("page"); await launcher.click(); const page = await popup; page.setDefaultTimeout(30_000);
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  await expect(page.getByRole("region", { name: "Staff sign in", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Main navigation" })).toHaveCount(0);
+  await page.getByLabel("Email", { exact: true }).fill("cashier@example.test"); await page.getByLabel("Password", { exact: true }).fill("wrong-password"); await page.getByRole("button", { name: "Sign in", exact: true }).click(); await expect(page.locator(".pos-login [role=alert]")).toContainText("Email or password", { timeout: 30000 });
+  await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "Enter full-screen POS", exact: true }).click(); await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true);
+  await expect(page.getByRole("button", { name: "Add Jollof rice", exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/pos/terminal.png", animations: "disabled" });
+  await page.getByRole("button", { name: "Add Jollof rice", exact: true }).click();
+  await page.getByRole("button", { name: "Add House Chapman", exact: true }).tap();
+  await page.getByRole("button", { name: "Increase Jollof rice", exact: true }).click();
+  await page.getByLabel("POS table", { exact: true }).selectOption("table7");
+  await page.getByLabel("POS customer name", { exact: true }).fill("Amaka");
+  await page.getByRole("button", { name: "Save sale & checkout", exact: true }).click();
+  await expect(page.getByLabel("Cash received", { exact: true })).toBeVisible();
+  await page.emulateMedia({ media: "print" }); await expect(page.getByText("UNPAID RECEIPT", { exact: true })).toBeVisible(); await expect(page.getByRole("button", { name: "Print receipt", exact: true })).toBeHidden(); await page.emulateMedia({ media: "screen" });
+  await page.getByLabel("Cash received", { exact: true }).fill("10000");
+  await page.screenshot({ path: "test-results/pos/checkout.png", animations: "disabled" });
+  await page.getByRole("button", { name: /Record .* payment/ }).click();
+  await expect(page.getByText("Paid in full", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Print receipt", exact: true })).toBeVisible();
+  await page.emulateMedia({ media: "print" }); await expect(page.locator(".pos-catalog")).toBeHidden(); await expect(page.getByText("PAID RECEIPT", { exact: true })).toBeVisible(); await page.pdf({ path: "test-results/pos/paid-receipt.pdf", printBackground: true }); await page.emulateMedia({ media: "screen" });
+  await page.getByRole("button", { name: "Next sale", exact: true }).click();
+  await page.evaluate(() => document.exitFullscreen()); await expect(page.getByRole("heading", { name: "POS is paused", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Enter full-screen POS", exact: true }).click();
+  await page.getByRole("button", { name: /cashier · Lock/ }).click();
+  await expect(page.getByRole("region", { name: "Staff sign in", exact: true })).toBeVisible();
+  assert.equal(await dashboard.evaluate(async () => (await fetch("/api/manage/auth/session")).status), 200);
+  await page.getByLabel("Email", { exact: true }).fill("viewer@example.test"); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "No POS access for this service", exact: true })).toBeVisible();
+  const row = await db.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId: tenant.id, kind: "runtime", id: venue.id } } });
+  assert.equal(row.data.orders.length, 1); assert.equal(row.data.orders[0].status, "settled"); assert.equal(row.data.orders[0].totals.total, 6500); assert.equal(row.data.payments.length, 1); assert.equal(row.data.inventory[0].quantity, 8); assert.equal(row.data.inventory[1].quantity, 9);
+  assert.deepEqual(errors, []);
+  console.log("POS browser: new tab, separate login, real fullscreen, touch/mouse basket, table sale, cash checkout, stock and independent lock passed.");
+} finally { await context.close(); await browser.close(); await db.tenant.delete({ where: { id: tenant.id } }); await db.$disconnect(); }

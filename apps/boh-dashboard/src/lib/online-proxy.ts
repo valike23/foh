@@ -12,7 +12,7 @@ export async function proxyOnline(request: NextRequest, path: string) {
     if (!request.headers.get("content-type")?.startsWith("application/json")) return NextResponse.json({ error: "JSON required" }, { status: 415 });
   }
   const body = request.method === "GET" ? undefined : await request.text();
-  if (body && Buffer.byteLength(body) > 1_000_000) return NextResponse.json({ error: "Request too large" }, { status: 413 });
+  if (body && Buffer.byteLength(body) > (path === "/api/offline/push" ? 32_000_000 : 1_000_000)) return NextResponse.json({ error: "Request too large" }, { status: 413 });
   const upstream = new URL(process.env.ONLINE_INTERNAL_URL ?? "http://127.0.0.1:4200");
   const secret = process.env.ONLINE_PROXY_SECRET;
   if (!["localhost", "127.0.0.1", "[::1]"].includes(upstream.hostname) && (!secret || secret.length < 32)) return NextResponse.json({ error: "Set the same ONLINE_PROXY_SECRET on the frontend and backend (at least 32 characters)." }, { status: 503 });
@@ -20,11 +20,11 @@ export async function proxyOnline(request: NextRequest, path: string) {
   try {
     const result = await new Promise<{ status: number; body: Buffer; cookies: string[] }>((resolve, reject) => {
       const send = upstream.protocol === "https:" ? httpsRequest : httpRequest;
-      const req = send(upstream, { method: request.method, headers: { Host: secret ? upstream.host : host, ...(secret ? { "X-Exa-Workspace-Host": host, "X-Exa-Proxy-Key": secret } : {}), "Content-Type": "application/json", ...(body ? { "Content-Length": String(Buffer.byteLength(body)) } : {}), ...(request.headers.get("cookie") ? { Cookie: request.headers.get("cookie")! } : {}), ...(request.headers.get("origin") ? { Origin: request.headers.get("origin")! } : {}), ...(request.headers.get("sec-fetch-site") ? { "Sec-Fetch-Site": request.headers.get("sec-fetch-site")! } : {}) } }, res => {
+      const req = send(upstream, { method: request.method, headers: { Host: secret ? upstream.host : host, ...(secret ? { "X-Exa-Workspace-Host": host, "X-Exa-Proxy-Key": secret } : {}), "Content-Type": "application/json", ...(path.startsWith("/api/offline/") && request.headers.get("authorization") ? { Authorization: request.headers.get("authorization")!, "X-Exa-Device-Id": request.headers.get("x-exa-device-id") ?? "" } : {}), ...(body ? { "Content-Length": String(Buffer.byteLength(body)) } : {}), ...(request.headers.get("cookie") ? { Cookie: request.headers.get("cookie")! } : {}), ...(request.headers.get("origin") ? { Origin: request.headers.get("origin")! } : {}), ...(request.headers.get("sec-fetch-site") ? { "Sec-Fetch-Site": request.headers.get("sec-fetch-site")! } : {}) } }, res => {
         const chunks: Buffer[] = []; res.on("data", chunk => chunks.push(chunk)); res.on("error", reject);
         res.on("end", () => resolve({ status: res.statusCode ?? 502, body: Buffer.concat(chunks), cookies: res.headers["set-cookie"] ?? [] }));
       });
-      req.setTimeout(15_000, () => req.destroy(new Error("Online API timeout"))); req.on("error", reject); req.end(body);
+      req.setTimeout(path.startsWith("/api/offline/") || path === "/api/sync/release" ? 90_000 : 15_000, () => req.destroy(new Error("Online API timeout"))); req.on("error", reject); req.end(body);
     });
     const response = new NextResponse(result.body.toString("utf8"), { status: result.status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
     result.cookies.forEach(cookie => response.headers.append("Set-Cookie", cookie));

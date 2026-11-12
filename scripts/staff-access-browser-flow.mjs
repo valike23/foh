@@ -45,7 +45,7 @@ try {
   await api("/staff", { name: "Read Only", email: "viewer@test.example", password, assignments: [{ role: "viewer", venueId: null, storefrontId: shops[0].id }] });
   await api("/staff", { name: "Venue Manager", email: "manager@test.example", password, assignments: [{ role: "venue-manager", venueId: venue.id, storefrontId: null }] });
   await api("/auth/logout", {}); await login("ada@test.example");
-  const cashierNav = page.getByRole("navigation", { name: "Main navigation" }); await expect(cashierNav.getByRole("link")).toHaveText(["Dashboard", "My account", "Sales", "Payments", "Orders"]);
+  const cashierNav = page.getByRole("navigation", { name: "Main navigation" }); await expect(cashierNav.getByRole("link")).toHaveText(["Dashboard", "My account", "Sales", "POS", "Payments", "Orders"]);
   await page.goto(`${tenant}/storefronts`); await expect(page.getByRole("link", { name: "Main Bar", exact: true })).toBeVisible(); await expect(page.getByRole("link", { name: "Kitchen", exact: true })).toHaveCount(0);
   await page.goto(`${tenant}/sales?operation=${venue.id}`); await page.getByRole("button", { name: "New sale", exact: true }).click(); await expect(page.getByLabel("Storefront", { exact: true }).locator("option")).toHaveCount(1);
   await page.getByLabel("Main Bar item quantity", { exact: true }).fill("1"); await page.getByRole("button", { name: "Create sale", exact: true }).click();

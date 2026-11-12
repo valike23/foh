@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 export default async function Page() {
+  if (process.env.EXA_OFFLINE_MODE === "1") redirect("/offline/setup");
   const requestHeaders = await headers();
   const host = requestHeaders.get("host") ?? "localhost:5173";
   const domain = process.env.TENANT_BASE_DOMAIN ?? "localhost";

@@ -1,11 +1,12 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { Prisma, type PrismaClient, type Tenant, type Venue } from "@prisma/client";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { z } from "zod";
 import { emptyVenueProfile, type BusinessEntity, type BusinessKind, type ManagedStorefront, type ManagedVendor, type FloorPlace, type ManagedVenue, type HubSnapshot, calculateOrderTotals, type Order } from "@exa-foh/shared";
 import { venueSchema, businessSchemas } from "./workspace-schemas.js";
 import { provisionSnapshot, openingBlockers, closeoutBlockers } from "./workspace-runtime.js";
 import { refreshFloor } from "./floor-runtime.js";
+import { assertCloudWriteAllowed } from "./offline-api.js";
 
 import { storefrontRecord, storefrontData } from "./storefront-repository.js";
 import { loadAccess, authorizeRequest, WorkspaceError, type Identity } from "./workspace-access.js";
@@ -17,7 +18,19 @@ const profile = (v: Venue): ManagedVenue => ({ ...emptyVenueProfile(), ...(v.pro
 
 export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request, res: Response) => Promise<Identity>) {
   const router = Router();
-  const run = (fn: (req: Request, res: Response, identity: Identity) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { void authenticate(req, res).then(async identity => { identity.access = await loadAccess(db, identity); await authorizeRequest(db, req, identity); return fn(req, res, identity); }).catch(next); };
+  const run = (fn: (req: Request, res: Response, identity: Identity) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { void authenticate(req, res).then(async identity => {
+    identity.access = await loadAccess(db, identity); await authorizeRequest(db, req, identity);
+    if (req.method !== "GET") {
+      const [kind, id] = req.path.split("/").filter(Boolean);
+      let scopeId = ["operations", "venues", "events"].includes(kind) ? id : req.body.scopeId;
+      if (["floor", "storefronts"].includes(kind) && id) {
+        const record = kind === "storefronts" ? await db.storefront.findFirst({ where: { tenantId: identity.tenant.id, id } }) : (await db.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId: identity.tenant.id, kind, id } } }))?.data as any;
+        scopeId = record?.scopeId ?? record?.venueId ?? record?.eventId;
+      }
+      if (scopeId) await assertCloudWriteAllowed(db, identity.tenant.id, scopeId);
+    }
+    return fn(req, res, identity);
+  }).catch(next); };
   async function venue(tenantId: string, id: string) { return await db.venue.findFirst({ where: { tenantId, id } }) ?? fail(404, "Venue not found"); }
   async function all<T = BusinessEntity>(tenantId: string, kind: string): Promise<T[]> { if (kind === "storefronts") return (await db.storefront.findMany({ where: { tenantId } })).map(storefrontRecord) as T[]; return (await db.workspaceRecord.findMany({ where: { tenantId, kind } })).map(r => r.data as unknown as T); }
   async function record<T = BusinessEntity>(tenantId: string, kind: string, id: string): Promise<T> { if (kind === "storefronts") { const store = await db.storefront.findFirst({ where: { tenantId, id } }); return store ? storefrontRecord(store) as T : fail(404, "Storefront not found"); } const row = await db.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId, kind, id } } }); return row ? row.data as unknown as T : fail(404, "Record not found"); }
@@ -56,6 +69,8 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
   async function configurationWrite<T>(tenantId: string, kind: BusinessKind, ref: Record<string, any>, write: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     if (kind !== "floor") return write(db);
     return db.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${tenantId + ":offline:" + ref.scopeId}))`;
+      await assertCloudWriteAllowed(tx, tenantId, ref.scopeId!);
       const runtime = await tx.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId, kind: "runtime", id: ref.scopeId! } } });
       const snapshot = runtime?.data as unknown as HubSnapshot | undefined;
       if (snapshot) checkFloorService(ref.scopeId!, snapshot);
@@ -149,6 +164,8 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
   // Optimistic revision checks make concurrent stock/order writes atomic.
   async function mutate<T>(tenantId: string, id: string, fn: (s: HubSnapshot) => T, expected?: number) {
     return db.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${tenantId + ":offline:" + id}))`;
+      await assertCloudWriteAllowed(tx, tenantId, id);
       const current = await tx.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId, kind: "runtime", id } } });
       if (!current) fail(404, "Publish this operation first");
       if (expected !== undefined && current.version !== expected) fail(409, "Service changed. Reload first.");
@@ -190,14 +207,24 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
     }); res.json({ ok: true });
   }));
   router.post("/operations/:id/service/orders", run(async (req, res, i) => {
-    const input = z.object({ storeId: z.string(), tableId: z.string().optional(), customerName: z.string().trim().max(100).optional(), lines: z.array(z.object({ menuItemId: z.string(), quantity: z.number().int().positive().max(1000) })).min(1).max(100) }).parse(req.body);
+    const input = z.object({ requestId: z.string().uuid().optional(), storeId: z.string(), tableId: z.string().optional(), customerName: z.string().trim().max(100).optional(), lines: z.array(z.object({ menuItemId: z.string(), quantity: z.number().int().positive().max(1000) })).min(1).max(100) }).parse(req.body);
     const order = await mutate(i.tenant.id, String(req.params.id), s => {
+      const key = input.requestId ? `${i.user.id}:${input.requestId}` : undefined;
+      const hash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const existing = key && s.orders.find(o => (o as any).posRequestKey === key);
+      if (existing) { if ((existing as any).posRequestHash !== hash) fail(409, "This sale request was already used with different items"); return existing; }
       if (s.event.status !== "live") fail(409, "Open service before taking orders");
       if (input.tableId && !s.tables.some(t => t.id === input.tableId && t.storeId === input.storeId)) fail(422, "Table is outside this storefront");
       const requested = new Map<string, number>();
       const lines = input.lines.map(line => { const menu = s.menuItems.find(m => m.id === line.menuItemId && m.storeId === input.storeId); if (!menu || !menu.available) fail(422, "Item unavailable"); const stock = s.inventory.find(v => v.id === menu.stockItemId); const quantity = (requested.get(menu.stockItemId) ?? 0) + line.quantity; requested.set(menu.stockItemId, quantity); if (!stock || stock.quantity < quantity) fail(409, "Not enough stock"); return { id: randomUUID(), menuItemId: menu.id, name: menu.name, quantity: line.quantity, unitPrice: menu.price, modifiers: [] }; });
       const created: Order = { id: randomUUID(), eventId: s.event.id, operatingPeriodId: s.operatingPeriods.find(p => p.status === "open")?.id, storeId: input.storeId, tableId: input.tableId, customerName: input.customerName, origin: "cashier", status: s.stores.find(store => store.id === input.storeId)?.manualConfirmation ? "sent" : "confirmed", createdBy: i.user.name, createdAt: now(), updatedAt: now(), lines, totals: calculateOrderTotals(lines, s.chargeRules), auditTrail: [] };
       if (created.status === "confirmed") for (const [stockId, quantity] of requested) { const stock = s.inventory.find(v => v.id === stockId)!; stock.quantity -= quantity; s.stockMovements.push({ id: randomUUID(), stockItemId: stockId, orderId: created.id, type: "sale", quantityDelta: -quantity, note: "Confirmed sale", createdAt: now() }); }
+      // A cashier at the dedicated POS has already confirmed the sale at checkout.
+      if (res.locals.pos && i.access!.store(input.storeId, ["cashier", "venue-manager", "storefront-manager"]) && created.status === "sent") {
+        created.status = "confirmed";
+        for (const [stockId, quantity] of requested) { const stock = s.inventory.find(v => v.id === stockId)!; stock.quantity -= quantity; s.stockMovements.push({ id: randomUUID(), stockItemId: stockId, orderId: created.id, type: "sale", quantityDelta: -quantity, note: "POS cashier confirmed sale", createdAt: now() }); }
+      }
+      if (key) Object.assign(created, { posRequestKey: key, posRequestHash: hash });
       s.orders.unshift(created); s.tables = s.tables.map(t => t.id === input.tableId ? { ...t, status: "occupied" } : t); return created;
     }); res.status(201).json(i.access!.order(order));
   }));
@@ -217,12 +244,33 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
     }); res.json(i.access!.order(updated));
   }));
   router.post("/operations/:id/service/payments", run(async (req, res, i) => {
-    const input = z.object({ orderId: z.string(), amount: z.number().positive().max(1e12), method: z.enum(["cash", "pos", "bank-transfer"]) }).parse(req.body);
+    const input = z.object({ requestId: z.string().uuid().optional(), orderId: z.string(), amount: z.number().positive().max(1e12), method: z.enum(["cash", "pos", "bank-transfer"]) }).parse(req.body);
     const result = await mutate(i.tenant.id, String(req.params.id), s => {
-      if (s.event.status === "closed") fail(409, "Service is closed"); const order = s.orders.find(o => o.id === input.orderId); if (!order || ["draft", "sent", "void", "rejected", "settled"].includes(order.status)) fail(409, "Choose an unpaid order");
+      const key = input.requestId ? `${i.user.id}:${input.requestId}` : undefined;
+      const hash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const existing = key && s.payments.find(p => (p as any).posRequestKey === key);
+      if (existing) { if ((existing as any).posRequestHash !== hash) fail(409, "This payment request was already used with different details"); return existing; }
+      if (s.event.status === "closed") fail(409, "Service is closed"); const order = s.orders.find(o => o.id === input.orderId); if (!order || ["draft", "void", "rejected", "settled"].includes(order.status) || (order.status === "sent" && !res.locals.pos)) fail(409, "Choose an unpaid order");
       const paid = s.payments.filter(p => p.orderId === order.id && ["validated", "manually-confirmed"].includes(p.status)).reduce((sum, p) => sum + p.amount, 0); if (input.amount > order.totals.total - paid) fail(409, "Payment exceeds the remaining balance");
+      if (order.status === "sent") {
+        const requested = new Map<string, number>();
+        for (const line of order.lines) {
+          const item = s.menuItems.find(m => m.id === line.menuItemId && m.storeId === order.storeId);
+          if (!item || !item.available) fail(409, "An ordered item is unavailable. Update the order before payment.");
+          requested.set(item.stockItemId, (requested.get(item.stockItemId) ?? 0) + line.quantity);
+        }
+        for (const [stockId, quantity] of requested) {
+          const stock = s.inventory.find(v => v.id === stockId);
+          if (!stock || stock.quantity < quantity) fail(409, "Not enough stock to complete this payment.");
+          stock.quantity -= quantity;
+          s.stockMovements.push({ id: randomUUID(), stockItemId: stockId, orderId: order.id, type: "sale", quantityDelta: -quantity, note: "Order confirmed at POS payment", createdAt: now() });
+        }
+        order.status = "confirmed"; order.updatedAt = now();
+        order.auditTrail.push({ id: randomUUID(), actor: i.user.name, action: "Confirmed order at POS payment", createdAt: now() });
+      }
       const store = s.stores.find(v => v.id === order.storeId)!;
       const payment = { id: randomUUID(), eventId: order.eventId, operatingPeriodId: order.operatingPeriodId, storeId: order.storeId, vendorId: store.vendorId, orderId: order.id, amount: input.amount, method: input.method, status: input.method === "cash" ? "validated" as const : "manually-confirmed" as const, confirmedBy: i.user.name, createdAt: now() };
+      if (key) Object.assign(payment, { posRequestKey: key, posRequestHash: hash });
       s.payments.unshift(payment); s.ledgerEntries.unshift({ id: randomUUID(), accountId: s.vendorLedgerAccounts.find(a => a.vendorId === store.vendorId)!.id, eventId: order.eventId, operatingPeriodId: order.operatingPeriodId, vendorId: store.vendorId, orderId: order.id, paymentId: payment.id, type: "revenue", direction: "credit", amount: input.amount, memo: `Payment for ${order.id}`, createdAt: now() });
       if (paid + input.amount >= order.totals.total) { order.status = "settled"; order.updatedAt = now(); if (order.tableId && !s.orders.some(o => o.tableId === order.tableId && !["settled", "void", "rejected"].includes(o.status))) s.tables = s.tables.map(t => t.id === order.tableId ? { ...t, status: "settled" } : t); } return payment;
     }); res.status(201).json(result);

@@ -1,0 +1,27 @@
+{
+  "name": "@exa-foh/offline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "build": "npm run build --workspace @exa-foh/shared && node scripts/build.mjs",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.cjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build --workspace @exa-foh/cloud && npm run build && node --test tests/*.test.mjs",
+    "desktop:prepare": "node scripts/prepare-desktop.mjs",
+    "desktop:dev": "npm --prefix desktop run dev",
+    "package:win": "npm run build && npm run desktop:prepare && npm --prefix desktop ci && npm --prefix desktop run package"
+  },
+  "dependencies": {
+    "@exa-foh/shared": "*",
+    "express": "^4.21.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.2"
+  }
+}

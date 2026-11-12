@@ -10,6 +10,7 @@ import { createStaffApi } from "./staff-api.js";
 import { createGuestApi } from "./guest-api.js";
 import { createOnboardingApi, initialOnboarding } from "./onboarding-api.js";
 import { createPreferencesApi } from "./preferences-api.js";
+import { createOfflineApi } from "./offline-api.js";
 
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -26,7 +27,13 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
   if (options.proxySecret && options.proxySecret.length < 32) throw new Error("ONLINE_PROXY_SECRET must contain at least 32 characters");
   const app = express();
   app.disable("x-powered-by");
+  app.use("/api/offline", express.json({ limit: "32mb" }));
   app.use(express.json({ limit: "1mb" }));
+  // POS has its own HttpOnly session; opening it never inherits dashboard login.
+  app.use((req, res, next) => {
+    if (req.path.startsWith("/api/pos/")) { res.locals.pos = true; req.url = req.url.replace(/^\/api\/pos\//, "/api/"); }
+    next();
+  });
   const run = (handler: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { void handler(req, res).catch(next); };
   app.use((req, res, next) => {
     res.set({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" });
@@ -72,14 +79,15 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
     if (!value) throw new HttpError(404, "Workspace not found");
     return value;
   }
-  function token(req: Request): string {
-    const value = req.headers.cookie?.split(";").map(v => v.trim()).find(v => v.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1) ?? "";
+  function token(req: Request, res: Response): string {
+    const name = res.locals.pos ? "exa-pos-session" : cookieName;
+    const value = req.headers.cookie?.split(";").map(v => v.trim()).find(v => v.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
     return /^[a-f0-9]{64}$/.test(value) ? value : "";
   }
   async function session(req: Request, res: Response) {
     if (singleHost && !res.locals.slug) throw new HttpError(401, "Choose your workspace and sign in");
     const workspace = await tenant(res);
-    const value = token(req);
+    const value = token(req, res);
     const found = value ? await db.session.findFirst({ where: { tokenHash: digest(value), tenantId: workspace.id, expiresAt: { gt: new Date() }, account: { active: true } }, include: { account: { select: { id: true, name: true, email: true, role: true, assignments: { select: { role: true, venueId: true, storefrontId: true } } } } } }) : null;
     if (!found) throw new HttpError(401, "Sign in to this workspace");
     return { tenant: workspace, user: { ...found.account, venueIds: found.account.assignments.flatMap(a => a.venueId ? [a.venueId] : []) } };
@@ -107,7 +115,7 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
     if (!account || !account.active || !timingSafeEqual(hash, Buffer.from(account.passwordHash, "hex"))) throw new HttpError(401, "Email or password is incorrect");
     const value = randomBytes(32).toString("hex");
     await db.session.create({ data: { tokenHash: digest(value), tenantId: workspace.id, accountId: account.id, expiresAt: new Date(Date.now() + 12 * 60 * 60_000) } });
-    res.cookie(cookieName, value, { ...cookieOptions, maxAge: 12 * 60 * 60_000 });
+    res.cookie(res.locals.pos ? "exa-pos-session" : cookieName, value, { ...cookieOptions, maxAge: 12 * 60 * 60_000 });
     if (singleHost) res.cookie("exa-workspace", workspace.slug, { ...cookieOptions, maxAge: 365 * 24 * 60 * 60_000 });
     res.json({ user: { id: account.id, name: account.name, email: account.email, role: account.role }, tenant: workspace });
   }));
@@ -120,13 +128,14 @@ export function createOnlineApp(db: PrismaClient, options: Options) {
   }));
   app.post("/api/auth/logout", run(async (req, res) => {
     const workspace = await tenant(res);
-    await db.session.deleteMany({ where: { tokenHash: digest(token(req)), tenantId: workspace.id } });
-    res.clearCookie(cookieName, cookieOptions).json({ ok: true });
+    await db.session.deleteMany({ where: { tokenHash: digest(token(req, res)), tenantId: workspace.id } });
+    res.clearCookie(res.locals.pos ? "exa-pos-session" : cookieName, cookieOptions).json({ ok: true });
   }));
   app.use("/api/guest", createGuestApi(db, tenant));
   app.use("/api/staff", createStaffApi(db, session));
   app.use("/api/onboarding", createOnboardingApi(db, session));
   app.use("/api/preferences", createPreferencesApi(db, session));
+  app.use("/api/offline", createOfflineApi(db, session));
   app.use("/api", createWorkspaceApi(db, session));
   app.get("/", run(async (_req, res) => {
     if (res.locals.slug) await tenant(res);

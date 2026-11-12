@@ -15,11 +15,15 @@
     "db:migrate": "npm run db:migrate -w @exa-foh/cloud",
     "test:online": "npm run test:online -w @exa-foh/cloud",
     "test:workspace:browser": "node scripts/main-workspace-browser-flow.mjs",
+    "dev:offline": "node scripts/dev-offline.mjs",
+    "test:offline": "npm run test -w @exa-foh/offline",
+    "build:offline": "npm run build -w @exa-foh/offline",
+    "package:offline:win": "npm run package:win -w @exa-foh/offline",
     "dev:hub": "npm run dev -w @exa-foh/hub",
     "dev:boh": "npm run dev -w @exa-foh/boh-dashboard",
     "dev:guest": "npm run dev -w @exa-foh/guest-order",
     "build": "npm run build -w @exa-foh/shared && npm run build -w @exa-foh/cloud && npm run build -w @exa-foh/hub && npm run build -w @exa-foh/boh-dashboard && npm run build -w @exa-foh/guest-order",
-    "typecheck": "npm run typecheck -w @exa-foh/shared && npm run typecheck -w @exa-foh/cloud && npm run typecheck -w @exa-foh/hub && npm run typecheck -w @exa-foh/boh-dashboard && npm run typecheck -w @exa-foh/guest-order",
+    "typecheck": "npm run typecheck -w @exa-foh/shared && npm run typecheck -w @exa-foh/cloud && npm run typecheck -w @exa-foh/hub && npm run typecheck -w @exa-foh/boh-dashboard && npm run typecheck -w @exa-foh/guest-order && npm run typecheck -w @exa-foh/offline",
     "verify:phase0": "npm run typecheck && npm run build"
   },
   "engines": {

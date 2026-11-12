@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { isOnlineWorkspace } from "../lib/deployment";
 
 export default async function Page() {
+  if (process.env.EXA_OFFLINE_MODE === "1") redirect("/login");
   const host = (await headers()).get("host") ?? "";
   redirect(isOnlineWorkspace(host) && (process.env.TENANT_ROUTING_MODE === "single-host" || host.split(":")[0] === `app.${process.env.TENANT_BASE_DOMAIN ?? "localhost"}`) ? "/signup" : "/dashboard");
 }

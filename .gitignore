@@ -15,3 +15,7 @@ apps/cloud/data/
 .env.*
 !.env.example
 .DS_Store
+apps/offline/data/
+apps/offline/release/
+apps/offline/desktop/frontend/
+.next-offline/

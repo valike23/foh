@@ -4,14 +4,15 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { Building2, CalendarDays, Store, Users, Map, ChevronRight, LogOut, Menu, ReceiptText, ShieldCheck, X, LayoutDashboard, CreditCard, ClipboardList, Package, ArrowRight, LoaderCircle } from "lucide-react";
+import { Building2, CalendarDays, Store, Users, Map, ChevronRight, LogOut, Menu, ReceiptText, ShieldCheck, X, LayoutDashboard, CreditCard, ClipboardList, Package, ArrowRight, LoaderCircle, RefreshCw } from "lucide-react";
 import { Button, cn } from "@exa-foh/ui";
 import type { ManagementUser } from "@exa-foh/shared";
 import { ApiError, managementApi, isTemporaryApiError } from "../lib/management-api";
 import { OperationalProvider } from "./operational-context";
 import { tenantBrandStyle, type TenantBrand } from "../lib/tenant-branding";
 
-import { useOnlineWorkspace } from "./deployment-context";
+import { useOnlineWorkspace, useOfflineWorkspace } from "./deployment-context";
+import { OfflineSyncBadge } from "./offline-sync";
 import type { OnboardingState } from "./workspace-onboarding";
 import { workspaceNavigation, resolveNavigationView, type WorkspaceMode, type NavigationView } from "../lib/workspace-navigation";
 import { OnboardingModal } from "./onboarding-modal";
@@ -30,6 +31,7 @@ export const useManagementTenant = () => useContext(TenantContext);
 export function ManagementShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const online = useOnlineWorkspace();
+  const offline = useOfflineWorkspace();
   const pathname = usePathname();
   const [user, setUser] = useState<ManagementUser | null>(null);
   const [tenant, setTenant] = useState<TenantBrand | null>(null);
@@ -98,15 +100,18 @@ export function ManagementShell({ children }: { children: ReactNode }) {
         <p className="px-3 pb-3 pt-8 text-xs text-muted-foreground">Operations</p>
         {management && relevant.operations && <NavLink href="/operations" active={pathname.startsWith("/operations")} icon={<ReceiptText size={18} />}>Service operations</NavLink>}
         {sell && <NavLink href="/sales" active={pathname === "/sales"} icon={<ReceiptText size={18} />}>Sales</NavLink>}
+        {online && sell && <Link href="/pos" target="_blank" rel="noopener noreferrer" className="mb-1 flex items-center gap-3 rounded-lg px-3 py-3 text-sm text-muted-foreground hover:bg-secondary/60 hover:text-foreground" title="Open standalone POS in a new tab"><CreditCard size={18} />POS<ArrowRight size={14} className="ml-auto -rotate-45" /></Link>}
         {payments && <NavLink href="/payments" active={pathname === "/payments"} icon={<CreditCard size={18} />}>Payments</NavLink>}
         <NavLink href="/orders" active={pathname === "/orders"} icon={<ClipboardList size={18} />}>Orders</NavLink>
         {stock && <NavLink href="/stock" active={pathname === "/stock"} icon={<Package size={18} />}>Stock</NavLink>}
+        {offline && <NavLink href="/sync" active={pathname === "/sync"} icon={<RefreshCw size={18} />}>Sync status</NavLink>}
         {floor && !management && relevant.sections && <NavLink href="/floor-control" active={pathname === "/floor-control"} icon={<Map size={18} />}>Table service</NavLink>}
       </nav>
-      {online && management && <details className="shrink-0 border-t border-border px-5 py-3"><summary className="cursor-pointer text-xs text-muted-foreground">Switch workspace</summary><div className="mt-3 space-y-3"><p className="text-xs text-muted-foreground">You’re in {activeView === "events" ? "Events" : "Physical locations"}. Save any edits before switching.</p><Button variant="outline" size="sm" className="w-full" disabled={switching} onClick={() => void switchView(activeView === "events" ? "location" : "events")}>{activeView === "events" ? <Building2 size={15} /> : <CalendarDays size={15} />}Enter {activeView === "events" ? "Physical locations" : "Events"}<ArrowRight size={14} /></Button></div></details>}
+      {online && !offline && management && <details className="shrink-0 border-t border-border px-5 py-3"><summary className="cursor-pointer text-xs text-muted-foreground">Switch workspace</summary><div className="mt-3 space-y-3"><p className="text-xs text-muted-foreground">You’re in {activeView === "events" ? "Events" : "Physical locations"}. Save any edits before switching.</p><Button variant="outline" size="sm" className="w-full" disabled={switching} onClick={() => void switchView(activeView === "events" ? "location" : "events")}>{activeView === "events" ? <Building2 size={15} /> : <CalendarDays size={15} />}Enter {activeView === "events" ? "Physical locations" : "Events"}<ArrowRight size={14} /></Button></div></details>}
       <div className="shrink-0 border-t border-border p-5"><p className="truncate text-sm font-medium">{user.name}</p><p className="mt-1 text-xs capitalize text-muted-foreground">{user.role}</p><Button variant="ghost" size="sm" className="mt-3 -ml-2" onClick={logout}><LogOut />Sign out</Button></div>
     </aside>
-    <div className="lg:pl-60"><header className="flex h-16 items-center gap-3 border-b border-border px-4 sm:px-8"><Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" onClick={() => setOpen(true)}><Menu /></Button><span className="flex items-center gap-2 text-sm text-muted-foreground">{activeView === "events" ? <CalendarDays size={16} className="text-amber-400" /> : <Building2 size={16} className="text-sky-400" />}{activeView === "events" ? "Events" : "Physical locations"}</span><ChevronRight size={14} className="text-muted-foreground" /><span className="text-sm">{({ onboarding: "Guided setup", dashboard: "Dashboard", venues: "Venues", events: "Events", vendors: "Vendors", storefronts: "Storefronts", floor: "Sections", sales: "Sales", payments: "Payments", orders: "Orders", stock: "Stock", operations: "Service operations" } as Record<string, string>)[pathname.split("/")[1]] ?? (fullMenu ? "Account & access" : "My account")}</span></header>
+    <div className="lg:pl-60"><header className="flex h-16 items-center gap-3 border-b border-border px-4 sm:px-8"><Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" onClick={() => setOpen(true)}><Menu /></Button><span className="flex items-center gap-2 text-sm text-muted-foreground">{activeView === "events" ? <CalendarDays size={16} className="text-amber-400" /> : <Building2 size={16} className="text-sky-400" />}{activeView === "events" ? "Events" : "Physical locations"}</span><ChevronRight size={14} className="text-muted-foreground" /><span className="text-sm">{({ sync: "Sync status", onboarding: "Guided setup", dashboard: "Dashboard", venues: "Venues", events: "Events", vendors: "Vendors", storefronts: "Storefronts", floor: "Sections", sales: "Sales", payments: "Payments", orders: "Orders", stock: "Stock", operations: "Service operations" } as Record<string, string>)[pathname.split("/")[1]] ?? (fullMenu ? "Account & access" : "My account")}</span></header>
+      {offline && <div className="px-4 pt-4 sm:px-8"><OfflineSyncBadge /></div>}
       {error && <div className="m-6 text-sm text-red-400" role="alert">{error}</div>}
       <main className="w-full min-w-0 p-4 sm:p-8">{["/overview", "/sales", "/payments", "/orders", "/stock", "/floor-control"].includes(pathname) ? <OperationalProvider>{children}</OperationalProvider> : children}</main>
     </div>

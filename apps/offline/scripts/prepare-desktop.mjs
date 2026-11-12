@@ -1,0 +1,20 @@
+import { cp, mkdir, access } from "node:fs/promises";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import sharp from "sharp";
+const root = path.resolve("../.."), dashboard = path.join(root, "apps/boh-dashboard"), output = ".next-offline";
+await new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, [path.join(root, "node_modules/next/dist/bin/next"), "build", "--webpack"], { cwd: dashboard, env: { ...process.env, EXA_NEXT_DIST_DIR: output, EXA_DESKTOP_BUILD: "1", EXA_OFFLINE_MODE: "1", EXA_DEPLOYMENT_MODE: "online" }, stdio: "inherit" });
+  child.on("error", reject); child.on("exit", code => code === 0 ? resolve() : reject(new Error(`Desktop frontend build exited ${code}`)));
+});
+const destination = path.resolve("desktop/frontend");
+await mkdir(destination, { recursive: true });
+await cp(path.join(dashboard, output, "standalone"), destination, { recursive: true });
+const application = path.join(destination, "apps/boh-dashboard");
+await access(path.join(application, "server.js"));
+await cp(path.join(dashboard, output, "static"), path.join(application, output, "static"), { recursive: true });
+await cp(path.join(dashboard, "public"), path.join(application, "public"), { recursive: true });
+await mkdir(path.join(application, "public/licenses"), { recursive: true });
+await cp(path.join(dashboard, "src/fonts/Inter-LICENSE.txt"), path.join(application, "public/licenses/Inter-LICENSE.txt"));
+await sharp(path.join(dashboard, "public/exa-icon.svg")).resize(256, 256).png().toFile(path.resolve("desktop/icon.png"));
+console.log("Standalone local frontend prepared.");

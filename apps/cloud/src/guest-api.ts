@@ -45,6 +45,8 @@ export function createGuestApi(db: PrismaClient, tenant: (res: Response) => Prom
     const hash = createHash("sha256").update(JSON.stringify({ ...input, storeId })).digest("hex");
     try {
       const result = await db.$transaction(async tx => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${t.id + ":offline:" + runtime.id}))`;
+        await assertCloudWriteAllowed(tx, t.id, runtime.id);
         const current = await tx.workspaceRecord.findUniqueOrThrow({ where: { tenantId_kind_id: { tenantId: t.id, kind: "runtime", id: runtime.id } } });
         const s = current.data as unknown as HubSnapshot;
         const previous = await tx.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId: t.id, kind: "guest-request", id: input.requestId } } });
@@ -90,3 +92,4 @@ export function createGuestApi(db: PrismaClient, tenant: (res: Response) => Prom
   }));
   return router;
 }
+import { assertCloudWriteAllowed } from "./offline-api.js";

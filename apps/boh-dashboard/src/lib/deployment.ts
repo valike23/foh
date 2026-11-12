@@ -1,4 +1,5 @@
 export function isOnlineWorkspace(host: string): boolean {
+  if (process.env.EXA_OFFLINE_MODE === "1") return true;
   if (process.env.EXA_DEPLOYMENT_MODE === "onsite") return false;
   const domain = process.env.TENANT_BASE_DOMAIN ?? "localhost";
   const hostname = host.toLowerCase().split(":")[0];
