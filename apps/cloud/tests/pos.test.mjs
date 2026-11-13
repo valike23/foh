@@ -40,7 +40,7 @@ test("POS login is separate; scoped cashier sales and payments are retry safe", 
   assert.equal(withImages.data.menuItems[0].categoryImage, image);
   assert.equal((await request(imagesPath, { image: "data:image/svg+xml;base64,abc", categoryImage: "" }, dashboard.cookie, "PATCH")).status, 422);
   assert.equal((await request(imagesPath, { image: "", categoryImage: "" }, dashboard.cookie, "PATCH")).status, 200);
-  const sale = { requestId: randomUUID(), storeId: store.id, lines: [{ menuItemId: "rice", quantity: 2 }] };
+  const sale = { requestId: randomUUID(), storeId: store.id, customerName: "Ada Test", customerPhone: "08012345678", lines: [{ menuItemId: "rice", quantity: 2 }] };
   const first = await request(`${path}/orders`, sale, cookie); assert.equal(first.status, 201, JSON.stringify(first));
   assert.equal(first.data.status, "confirmed", "POS cashier sales must proceed directly to payment");
   const retry = await request(`${path}/orders`, sale, cookie); assert.equal(retry.status, 201); assert.equal(retry.data.id, first.data.id);
@@ -50,7 +50,11 @@ test("POS login is separate; scoped cashier sales and payments are retry safe", 
   assert.equal((await request(`${path}/payments`, payment, cookie)).data.id, pay.data.id);
   assert.equal((await request(`${path}/payments`, { ...payment, amount: 4000 }, cookie)).status, 409);
   const saved = await request(`${path}/snapshot`, undefined, cookie); assert.equal(saved.data.inventory[0].quantity, 8); assert.equal(saved.data.orders.length, 1); assert.equal(saved.data.payments.length, 1); assert.equal(saved.data.orders[0].status, "settled");
-  const pending = await request(`/operations/${venue.id}/service/orders`, { storeId: store.id, lines: [{ menuItemId: "rice", quantity: 1 }] }, dashboard.cookie);
+  assert.ok(first.data.customerId);
+  const customerRows = await db.customer.findMany({ where: { tenantId: tenant.id } }); assert.equal(customerRows.length, 1); assert.equal(customerRows[0].phone, "08012345678");
+  assert.equal(await db.customerOrder.count({ where: { tenantId: tenant.id, customerId: first.data.customerId } }), 1);
+  const matches = await request(path + "/customers?q=Ada", undefined, cookie); assert.equal(matches.status, 200); assert.equal(matches.data.items[0].spent, 5000);
+  const pending = await request(`/operations/${venue.id}/service/orders`, { storeId: store.id, customerId: first.data.customerId, lines: [{ menuItemId: "rice", quantity: 1 }] }, dashboard.cookie);
   assert.equal(pending.data.status, "sent", "ordinary orders still require confirmation");
   const pendingPayment = { requestId: randomUUID(), orderId: pending.data.id, amount: 2500, method: "pos" };
   assert.equal((await request(`${path}/payments`, pendingPayment, cookie)).status, 201);
@@ -59,6 +63,8 @@ test("POS login is separate; scoped cashier sales and payments are retry safe", 
   assert.equal(completed.data.inventory[0].quantity, 7, "paying a pending order deducts stock only once");
   assert.equal(completed.data.orders.find(o => o.id === pending.data.id).status, "settled");
   assert.equal(completed.data.payments.length, 2);
+  assert.equal((await request(path + "/customers?q=080123", undefined, cookie)).data.items[0].spent, 7500);
+  assert.equal(await db.customer.count({ where: { tenantId: tenant.id } }), 1);
   assert.equal((await request("/pos/auth/logout", {}, cookie)).status, 200);
   assert.equal((await request("/pos/auth/session", undefined, cookie)).status, 401);
   assert.equal((await request("/auth/session", undefined, dashboard.cookie)).status, 200);

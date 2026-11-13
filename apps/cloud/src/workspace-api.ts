@@ -1,3 +1,4 @@
+import { linkPosCustomer } from "./pos-customers.js";
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { Prisma, type PrismaClient, type Tenant, type Venue } from "@prisma/client";
 import { randomUUID, createHash } from "node:crypto";
@@ -167,7 +168,7 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
     await db.workspaceRecord.create({ data: { tenantId: i.tenant.id, kind: "runtime", id, data: json(s) } }); res.json({ id, published: true });
   }));
   // Optimistic revision checks make concurrent stock/order writes atomic.
-  async function mutate<T>(tenantId: string, id: string, fn: (s: HubSnapshot) => T, expected?: number) {
+  async function mutate<T>(tenantId: string, id: string, fn: (s: HubSnapshot, tx: Prisma.TransactionClient) => T | Promise<T>, expected?: number) {
     return db.$transaction(async tx => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${tenantId + ":offline:" + id}))`;
       await assertCloudWriteAllowed(tx, tenantId, id);
@@ -175,7 +176,7 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
       if (!current) fail(404, "Publish this operation first");
       if (expected !== undefined && current.version !== expected) fail(409, "Service changed. Reload first.");
       const snapshot = current.data as unknown as HubSnapshot;
-      const result = fn(snapshot);
+      const result = await fn(snapshot, tx);
       const changed = await tx.workspaceRecord.updateMany({ where: { tenantId, kind: "runtime", id, version: current.version }, data: { version: { increment: 1 }, data: json(snapshot) } });
       if (!changed.count) fail(409, "Service changed. Please retry."); return result;
     });
@@ -193,6 +194,24 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
       else { if (!["live", "paused"].includes(status)) fail(409, "Only open service can close"); const blockers = closeoutBlockers(s); if (blockers.length) fail(409, blockers.join(". ")); s.event.status = "closed"; s.operatingPeriods = s.operatingPeriods.map(p => p.status === "open" ? { ...p, status: "closed", closedAt: now(), closedBy: i.user.name } : p); }
       s.auditLog.unshift({ id: randomUUID(), actor: i.user.name, action: `${input.action}: ${input.reason}`, createdAt: now() });
     }, input.revision); res.json({ ok: true });
+  }));
+  router.get("/operations/:id/service/customers", run(async (req, res, i) => {
+    const runtime = await record<HubSnapshot>(i.tenant.id, "runtime", String(req.params.id));
+    if (!runtime.stores.some(store => i.access!.store(store.id, ["cashier", "venue-manager", "storefront-manager"]))) fail(403, "Customer access requires a selling role");
+    const query = String(req.query.q ?? "").trim().toLowerCase().slice(0, 100);
+    if (query.length < 2) return res.json({ items: [] });
+    const customers = await db.customer.findMany({ where: { tenantId: i.tenant.id } });
+    const rows = await db.workspaceRecord.findMany({ where: { tenantId: i.tenant.id, kind: "runtime" } });
+    const items = customers.filter(c => [c.name, c.phone, c.email, c.id].some(v => v?.toLowerCase().includes(query))).slice(0, 10).map(c => {
+      let spent = 0, orders = 0;
+      for (const row of rows) {
+        const snapshot = row.data as unknown as HubSnapshot;
+        for (const order of snapshot.orders) if (order.customerId === c.id && !["void", "rejected"].includes(order.status) && i.access!.store(order.storeId, ["cashier", "venue-manager", "storefront-manager"])) {
+          orders++; spent += snapshot.payments.filter(p => p.orderId === order.id && ["validated", "manually-confirmed"].includes(p.status)).reduce((sum, p) => sum + p.amount, 0);
+        }
+      }
+      return { id: c.id, name: c.name, phone: c.phone, email: c.email, spent, orders };
+    }); res.json({ items });
   }));
   router.get("/operations/:id/service/snapshot", run(async (req, res, i) => res.json(i.access!.snapshot(await record<HubSnapshot>(i.tenant.id, "runtime", String(req.params.id))))));
   router.post("/operations/:id/service/menu-items", run(async (req, res, i) => {
@@ -224,8 +243,8 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
     }); res.json({ ok: true });
   }));
   router.post("/operations/:id/service/orders", run(async (req, res, i) => {
-    const input = z.object({ requestId: z.string().uuid().optional(), storeId: z.string(), tableId: z.string().optional(), customerName: z.string().trim().max(100).optional(), lines: z.array(z.object({ menuItemId: z.string(), quantity: z.number().int().positive().max(1000) })).min(1).max(100) }).parse(req.body);
-    const order = await mutate(i.tenant.id, String(req.params.id), s => {
+    const input = z.object({ requestId: z.string().uuid().optional(), storeId: z.string(), tableId: z.string().optional(), customerId: z.string().uuid().optional(), customerPhone: z.string().trim().transform(v => v.replace(/[\s().-]/g, "")).pipe(z.string().regex(/^\+?[0-9]{7,15}$/)).optional(), customerEmail: z.string().trim().toLowerCase().email().max(254).optional(), customerName: z.string().trim().max(100).optional(), lines: z.array(z.object({ menuItemId: z.string(), quantity: z.number().int().positive().max(1000) })).min(1).max(100) }).parse(req.body);
+    const order = await mutate(i.tenant.id, String(req.params.id), async (s, tx) => {
       const key = input.requestId ? `${i.user.id}:${input.requestId}` : undefined;
       const hash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
       const existing = key && s.orders.find(o => (o as any).posRequestKey === key);
@@ -234,7 +253,8 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
       if (input.tableId && !s.tables.some(t => t.id === input.tableId && t.storeId === input.storeId)) fail(422, "Table is outside this storefront");
       const requested = new Map<string, number>();
       const lines = input.lines.map(line => { const menu = s.menuItems.find(m => m.id === line.menuItemId && m.storeId === input.storeId); if (!menu || !menu.available) fail(422, "Item unavailable"); const stock = s.inventory.find(v => v.id === menu.stockItemId); const quantity = (requested.get(menu.stockItemId) ?? 0) + line.quantity; requested.set(menu.stockItemId, quantity); if (!stock || stock.quantity < quantity) fail(409, "Not enough stock"); return { id: randomUUID(), menuItemId: menu.id, name: menu.name, quantity: line.quantity, unitPrice: menu.price, modifiers: [] }; });
-      const created: Order = { id: randomUUID(), eventId: s.event.id, operatingPeriodId: s.operatingPeriods.find(p => p.status === "open")?.id, storeId: input.storeId, tableId: input.tableId, customerName: input.customerName, origin: "cashier", status: s.stores.find(store => store.id === input.storeId)?.manualConfirmation ? "sent" : "confirmed", createdBy: i.user.name, createdAt: now(), updatedAt: now(), lines, totals: calculateOrderTotals(lines, s.chargeRules), auditTrail: [] };
+      const customer = await linkPosCustomer(tx, i.tenant.id, input);
+      const created: Order = { customerId: customer?.id, customerPhone: customer?.phone ?? undefined, customerEmail: customer?.email ?? undefined, id: randomUUID(), eventId: s.event.id, operatingPeriodId: s.operatingPeriods.find(p => p.status === "open")?.id, storeId: input.storeId, tableId: input.tableId, customerName: customer?.name ?? input.customerName, origin: "cashier", status: s.stores.find(store => store.id === input.storeId)?.manualConfirmation ? "sent" : "confirmed", createdBy: i.user.name, createdAt: now(), updatedAt: now(), lines, totals: calculateOrderTotals(lines, s.chargeRules), auditTrail: [] };
       if (created.status === "confirmed") for (const [stockId, quantity] of requested) { const stock = s.inventory.find(v => v.id === stockId)!; stock.quantity -= quantity; s.stockMovements.push({ id: randomUUID(), stockItemId: stockId, orderId: created.id, type: "sale", quantityDelta: -quantity, note: "Confirmed sale", createdAt: now() }); }
       // A cashier at the dedicated POS has already confirmed the sale at checkout.
       if (res.locals.pos && i.access!.store(input.storeId, ["cashier", "venue-manager", "storefront-manager"]) && created.status === "sent") {
@@ -242,6 +262,7 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
         for (const [stockId, quantity] of requested) { const stock = s.inventory.find(v => v.id === stockId)!; stock.quantity -= quantity; s.stockMovements.push({ id: randomUUID(), stockItemId: stockId, orderId: created.id, type: "sale", quantityDelta: -quantity, note: "POS cashier confirmed sale", createdAt: now() }); }
       }
       if (key) Object.assign(created, { posRequestKey: key, posRequestHash: hash });
+      if (customer) await tx.customerOrder.create({ data: { tenantId: i.tenant.id, orderId: created.id, customerId: customer.id, storefrontId: input.storeId, operationId: s.event.id } });
       s.orders.unshift(created); s.tables = s.tables.map(t => t.id === input.tableId ? { ...t, status: "occupied" } : t); return created;
     }); res.status(201).json(i.access!.order(order));
   }));

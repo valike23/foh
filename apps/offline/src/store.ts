@@ -1,10 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, existsSync, chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, createHash, randomUUID } from "node:crypto";
 
 type Row = Record<string, any>;
-export type Bundle = { tenant: Row; venues: Row[]; storefronts: Row[]; accounts: Row[]; assignments: Row[]; records: Row[]; runtime?: Row; staffValidUntil: string };
+export type Bundle = { tenant: Row; venues: Row[]; storefronts: Row[]; accounts: Row[]; assignments: Row[]; records: Row[]; runtime?: Row; staffValidUntil: string; customers?: Row[] };
 function matches(row: Row, where: Row = {}): boolean {
   return Object.entries(where).every(([key, value]) => {
     if (key === "OR") return value.some((part: Row) => matches(row, part));
@@ -40,7 +40,9 @@ export class LocalStore {
       CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(status,sequence);`);
     if (!(this.db.prepare("PRAGMA table_info(outbox)").all() as Row[]).some(r => r.name === "changes")) this.db.exec("ALTER TABLE outbox ADD COLUMN changes INTEGER NOT NULL DEFAULT 1");
     if (!this.meta("setupKey")) this.setMeta("setupKey", randomBytes(24).toString("hex"));
-    this.adapter = Object.fromEntries(["tenant", "venue", "storefront", "account", "staffAssignment", "workspaceRecord"].map(model => [model, {
+    this.adapter = Object.fromEntries(["tenant", "venue", "storefront", "account", "staffAssignment", "workspaceRecord", "customer", "customerBrowser", "customerOrder"].map(model => [model, {
+      create: async (args: Row) => { const row = { id: randomUUID(), createdAt: new Date().toISOString(), ...args.data }; this.put(model, row); return clone(row); },
+      update: async (args: Row) => { const row = this.all(model).find(r => matches(r, args.where)); if (!row) throw new Error("Record not found"); const result = { ...row, ...args.data }; this.put(model, result); return clone(result); },
       findMany: async (args: Row = {}) => this.all(model).filter(r => matches(r, args.where)).map(clone),
       findFirst: async (args: Row = {}) => { const row = this.all(model).find(r => matches(r, args.where)); return row ? clone(row) : null; },
       findUnique: async (args: Row) => { const row = this.all(model).find(r => matches(r, args.where)); return row ? clone(row) : null; },
@@ -65,6 +67,7 @@ export class LocalStore {
       this.db.exec("BEGIN IMMEDIATE");
       try { const result = await fn(this.adapter); this.db.exec("COMMIT"); return result; } catch (e) { this.db.exec("ROLLBACK"); throw e; }
     };
+    this.adapter.$queryRaw = async () => [];
     this.adapter.$executeRaw = async () => 0; // Requests are serialized on the local connection.
   }
   exclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -80,6 +83,16 @@ export class LocalStore {
   applyBundle(bundle: Bundle, initial = false) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      for (const customer of bundle.customers ?? []) {
+        for (const local of this.all("customer")) if (local.id !== customer.id && ((customer.phone && local.phone === customer.phone) || (customer.email && local.email === customer.email))) {
+          for (const row of this.all("workspaceRecord").filter(r => r.kind === "runtime")) {
+            for (const order of row.data.orders) if (order.customerId === local.id) order.customerId = customer.id;
+            this.put("workspaceRecord", row);
+          }
+          this.db.prepare("DELETE FROM documents WHERE model='customer' AND id=?").run(local.id);
+        }
+        this.put("customer", customer);
+      }
       const previous = new Map(this.all("account").map(a => [a.id, JSON.stringify(a)]));
       for (const model of ["tenant", "venue", "storefront", "account", "staffAssignment"]) this.db.prepare("DELETE FROM documents WHERE model=?").run(model);
       this.put("tenant", bundle.tenant);

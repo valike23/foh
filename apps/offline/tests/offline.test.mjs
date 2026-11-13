@@ -64,7 +64,7 @@ test("offline hub persists LAN sales, enforces roles, resumes sync without dupli
   assert.ok(!JSON.stringify(cashier.data).includes("passwordHash"));
   const waiter = await request("/auth/login", credentials("waiter")), prep = await request("/auth/login", credentials("prep"));
   assert.equal(waiter.status, 200); assert.equal(prep.status, 200);
-  const service = `/operations/${venue.id}/service`, saleInput = { requestId: randomUUID(), storeId: storefront.id, lines: [{ menuItemId: "rice", quantity: 2 }] };
+  const service = `/operations/${venue.id}/service`, saleInput = { requestId: randomUUID(), storeId: storefront.id, customerName: "Offline Ada", customerPhone: "08012345678", lines: [{ menuItemId: "rice", quantity: 2 }] };
   const sale = await request(`/pos${service}/orders`, saleInput, cashier.cookie); assert.equal(sale.status, 201, JSON.stringify(sale)); assert.equal(sale.data.status, "confirmed");
   const paymentInput = { requestId: randomUUID(), orderId: sale.data.id, amount: 5000, method: "cash" };
   assert.equal((await request(`/pos${service}/payments`, paymentInput, cashier.cookie)).status, 201);
@@ -72,6 +72,8 @@ test("offline hub persists LAN sales, enforces roles, resumes sync without dupli
   const waiterOrder = await request(`${service}/orders`, { storeId: storefront.id, lines: [{ menuItemId: "rice", quantity: 1 }] }, waiter.cookie); assert.equal(waiterOrder.data.status, "sent");
   assert.equal((await request(`${service}/orders/${waiterOrder.data.id}/status`, { status: "confirmed" }, prep.cookie, "PATCH")).status, 200);
   assert.equal((await request(`/pos${service}/payments`, {}, cashier.cookie, "POST", "https://evil.example")).status, 403);
+  assert.ok(sale.data.customerId);
+  const localCustomers = await request(`/pos${service}/customers?q=Offline`, undefined, cashier.cookie); assert.equal(localCustomers.status, 200); assert.equal(localCustomers.data.items[0].spent, 5000);
   const queued = store.status().pending; assert.ok(queued >= 4);
   await hub.worker.run(); assert.equal(store.status().pending, queued); assert.match(store.status().lastError, /disconnected/);
   await stop(); await start();
@@ -82,6 +84,9 @@ test("offline hub persists LAN sales, enforces roles, resumes sync without dupli
   await hub.worker.run(); assert.equal(store.pending().length, 0, store.status().lastError); assert.equal(store.status().lastError, null);
   const synced = await db.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId: tenant.id, kind: "runtime", id: venue.id } } });
   assert.equal(synced.data.orders.length, 2); assert.equal(synced.data.payments.length, 1); assert.equal(synced.data.inventory[0].quantity, 17);
+  assert.equal(await db.customer.count({ where: { tenantId: tenant.id } }), 1);
+  const customerLink = await db.customerOrder.findUnique({ where: { tenantId_orderId: { tenantId: tenant.id, orderId: sale.data.id } } }); assert.equal(customerLink.customerId, sale.data.customerId);
+  assert.equal(synced.data.orders.find(o => o.id === sale.data.id).customerId, sale.data.customerId);
   const cashierAccount = await db.account.findUnique({ where: { tenantId_email: { tenantId: tenant.id, email: "cashier@test.example" } } });
   await db.account.update({ where: { id: cashierAccount.id }, data: { active: false } }); await hub.worker.run();
   assert.equal((await request("/pos/auth/session", undefined, restartedCashier.cookie)).status, 401, "cloud staff revocation invalidates the local session");

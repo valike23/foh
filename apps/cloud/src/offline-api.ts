@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { linkPosCustomer } from "./pos-customers.js";
 import { createHash } from "node:crypto";
 import type { PrismaClient, Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -24,7 +25,7 @@ export async function offlineBundle(db: PrismaClient | Prisma.TransactionClient,
   const accountIds = new Set(assignments.map(a => a.accountId));
   const accounts = (await db.account.findMany({ where: { tenantId, active: true } })).filter(a => a.role === "owner" || accountIds.has(a.id));
   const records = (await db.workspaceRecord.findMany({ where: { tenantId, kind: { in: ["floor", "vendors"] } } })).filter(r => r.kind === "vendors" ? vendorIds.has(r.id) : (r.data as any).scopeId === operationId);
-  return { tenant, venues, storefronts, accounts, assignments, records: [...events, ...records], runtime, staffValidUntil: new Date(Date.now() + 7 * 86400_000).toISOString() };
+  return { customers: await db.customer.findMany({ where: { tenantId } }), tenant, venues, storefronts, accounts, assignments, records: [...events, ...records], runtime, staffValidUntil: new Date(Date.now() + 7 * 86400_000).toISOString() };
 }
 
 export function createOfflineApi(db: PrismaClient, authenticate: (req: Request, res: Response) => Promise<Identity>) {
@@ -97,6 +98,19 @@ export function createOfflineApi(db: PrismaClient, authenticate: (req: Request, 
       if (!lease.active || lease.deviceId !== d.id) throw new WorkspaceError(409, "Hub ownership changed");
       if (input.sequence === lease.lastSequence && hash === lease.lastHash) return { version: lease.revision, sequence: input.sequence };
       if (input.sequence <= lease.lastSequence || input.baseVersion !== lease.revision) throw new WorkspaceError(409, "Sync conflict: the cloud revision differs. Local records have been kept. Contact the business owner.");
+      for (const order of (input.snapshot.orders as any[] ?? [])) {
+        if (!order.customerId) continue;
+        const linked = await tx.customerOrder.findUnique({ where: { tenantId_orderId: { tenantId: d.tenantId, orderId: order.id } } });
+        if (linked) { order.customerId = linked.customerId; continue; }
+        const existing = await tx.customer.findFirst({ where: { tenantId: d.tenantId, id: order.customerId } });
+        const contacts = await tx.customer.findMany({ where: { tenantId: d.tenantId, OR: [...(order.customerPhone ? [{ phone: order.customerPhone }] : []), ...(order.customerEmail ? [{ email: order.customerEmail }] : [])] } });
+        if (!existing && !contacts.length) await tx.customer.create({ data: { id: order.customerId, tenantId: d.tenantId, name: order.customerName, phone: order.customerPhone, email: order.customerEmail } });
+        const customer = existing ?? (!contacts.length ? await tx.customer.findFirst({ where: { tenantId: d.tenantId, id: order.customerId } }) : await linkPosCustomer(tx, d.tenantId, { customerName: order.customerName, customerPhone: order.customerPhone, customerEmail: order.customerEmail }));
+        if (customer) {
+          order.customerId = customer.id;
+          await tx.customerOrder.create({ data: { tenantId: d.tenantId, orderId: order.id, customerId: customer.id, storefrontId: order.storeId, operationId: d.data.operationId } });
+        }
+      }
       const changed = await tx.workspaceRecord.updateMany({ where: { ...key(d.tenantId, "runtime", d.data.operationId), version: input.baseVersion }, data: { data: json(input.snapshot), version: { increment: 1 } } });
       if (!changed.count) throw new WorkspaceError(409, "Cloud service changed unexpectedly. Local records have been kept.");
       const version = input.baseVersion + 1;
