@@ -118,6 +118,8 @@ export type Seat = {
 export type MenuCategory = "Drinks" | "Food" | "Bottle Service" | "Merch";
 
 export type MenuItem = {
+  image?: string;
+  categoryImage?: string;
   description?: string;
   menuSection?: string;
   imageId?: string;

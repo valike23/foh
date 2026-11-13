@@ -21,9 +21,9 @@ test("POS login is separate; scoped cashier sales and payments are retry safe", 
   const snapshot = provisionSnapshot(venue, "venue", [storefrontRecord(store)], [{ id: "house", name: "House", kind: "internal" }], []);
   snapshot.event.status = "live"; snapshot.menuItems.push({ id: "rice", storeId: store.id, name: "Jollof rice", category: "Food", price: 2500, stockItemId: "stock", available: true, modifiers: [] }); snapshot.inventory.push({ id: "stock", storeId: store.id, name: "Rice", quantity: 10, unit: "plates", lowStockThreshold: 2 });
   await db.workspaceRecord.create({ data: { tenantId: tenant.id, kind: "runtime", id: venue.id, data: snapshot } });
-  async function request(path, body, cookie) {
+  async function request(path, body, cookie, method) {
     const host = `${slug}.localhost:4200`;
-    const response = await fetch(`http://127.0.0.1:${server.address().port}/api${path}`, { method: body ? "POST" : "GET", headers: { host, origin: `http://${host}`, "Content-Type": "application/json", ...(cookie ? { cookie } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api${path}`, { method: method ?? (body ? "POST" : "GET"), headers: { host, origin: `http://${host}`, "Content-Type": "application/json", ...(cookie ? { cookie } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: response.status, data: await response.json(), cookie: response.headers.get("set-cookie")?.split(";")[0] };
   }
   const dashboard = await request("/auth/login", { email: "owner@example.test", password }); assert.equal(dashboard.status, 200);
@@ -31,6 +31,15 @@ test("POS login is separate; scoped cashier sales and payments are retry safe", 
   const login = await request("/pos/auth/login", { email: "staff@example.test", password }); assert.equal(login.status, 200); assert.match(login.cookie, /^exa-pos-session=/);
   assert.equal((await request("/auth/session", undefined, login.cookie)).status, 401);
   const cookie = login.cookie, path = `/pos/operations/${venue.id}/service`;
+  const image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9XkAAAAASUVORK5CYII=";
+  const imagesPath = "/operations/" + venue.id + "/service/menu-items/rice/images";
+  assert.equal((await request(imagesPath, { image, categoryImage: image }, cookie, "PATCH")).status, 401);
+  assert.equal((await request(imagesPath, { image, categoryImage: image }, dashboard.cookie, "PATCH")).status, 200);
+  const withImages = await request(path + "/snapshot", undefined, cookie);
+  assert.equal(withImages.data.menuItems[0].image, image);
+  assert.equal(withImages.data.menuItems[0].categoryImage, image);
+  assert.equal((await request(imagesPath, { image: "data:image/svg+xml;base64,abc", categoryImage: "" }, dashboard.cookie, "PATCH")).status, 422);
+  assert.equal((await request(imagesPath, { image: "", categoryImage: "" }, dashboard.cookie, "PATCH")).status, 200);
   const sale = { requestId: randomUUID(), storeId: store.id, lines: [{ menuItemId: "rice", quantity: 2 }] };
   const first = await request(`${path}/orders`, sale, cookie); assert.equal(first.status, 201, JSON.stringify(first));
   assert.equal(first.data.status, "confirmed", "POS cashier sales must proceed directly to payment");

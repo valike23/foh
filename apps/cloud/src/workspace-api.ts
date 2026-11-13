@@ -11,6 +11,11 @@ import { assertCloudWriteAllowed } from "./offline-api.js";
 import { storefrontRecord, storefrontData } from "./storefront-repository.js";
 import { loadAccess, authorizeRequest, WorkspaceError, type Identity } from "./workspace-access.js";
 export { WorkspaceError } from "./workspace-access.js";
+const stockImage = z.string().max(310000).regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/).refine(value => {
+  if (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+  const bytes = Buffer.from(value.split(",")[1], "base64");
+  return bytes.length <= 225000 && (value.startsWith("data:image/png;") ? bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) : value.startsWith("data:image/jpeg;") ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 : bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP");
+}, "Upload a valid PNG, JPEG or WebP image").or(z.literal("")).optional();
 const now = () => new Date().toISOString();
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 function fail(status: number, message: string): never { throw new WorkspaceError(status, message); }
@@ -191,13 +196,25 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
   }));
   router.get("/operations/:id/service/snapshot", run(async (req, res, i) => res.json(i.access!.snapshot(await record<HubSnapshot>(i.tenant.id, "runtime", String(req.params.id))))));
   router.post("/operations/:id/service/menu-items", run(async (req, res, i) => {
-    const input = z.object({ storeId: z.string(), name: z.string().trim().min(2).max(100), category: z.enum(["Drinks", "Food", "Bottle Service", "Merch"]), price: z.number().int().nonnegative().max(1e9), quantity: z.number().int().nonnegative().max(1e6), lowStockThreshold: z.number().int().nonnegative().max(1e6), unit: z.string().trim().min(1).max(40) }).parse(req.body);
+    const input = z.object({ image: stockImage, categoryImage: stockImage, storeId: z.string(), name: z.string().trim().min(2).max(100), category: z.enum(["Drinks", "Food", "Bottle Service", "Merch"]), price: z.number().int().nonnegative().max(1e9), quantity: z.number().int().nonnegative().max(1e6), lowStockThreshold: z.number().int().nonnegative().max(1e6), unit: z.string().trim().min(1).max(40) }).parse(req.body);
     const result = await mutate(i.tenant.id, String(req.params.id), s => {
       if (s.event.status === "closed") fail(409, "Service is closed");
       if (!s.stores.some(v => v.id === input.storeId)) fail(422, "Choose a storefront in this operation");
-      const stockId = randomUUID(); const item = { id: randomUUID(), storeId: input.storeId, name: input.name, category: input.category, price: input.price, stockItemId: stockId, available: input.quantity > 0, modifiers: [] };
+      if (input.categoryImage) for (const menu of s.menuItems) if (menu.storeId === input.storeId && menu.category === input.category) menu.categoryImage = input.categoryImage;
+      const stockId = randomUUID(); const item = { image: input.image, categoryImage: input.categoryImage || s.menuItems.find(m => m.storeId === input.storeId && m.category === input.category)?.categoryImage, id: randomUUID(), storeId: input.storeId, name: input.name, category: input.category, price: input.price, stockItemId: stockId, available: input.quantity > 0, modifiers: [] };
       s.menuItems.push(item); s.inventory.push({ id: stockId, storeId: input.storeId, name: input.name, unit: input.unit, quantity: input.quantity, lowStockThreshold: input.lowStockThreshold }); return item;
     }); res.status(201).json(result);
+  }));
+  router.patch("/operations/:id/service/menu-items/:itemId/images", run(async (req, res, i) => {
+    const input = z.object({ image: stockImage.or(z.literal("")), categoryImage: stockImage.or(z.literal("")) }).parse(req.body);
+    const result = await mutate(i.tenant.id, String(req.params.id), s => {
+      if (s.event.status === "closed") fail(409, "Service is closed");
+      const item = s.menuItems.find(m => m.id === req.params.itemId);
+      if (!item) fail(404, "Menu item not found");
+      item.image = input.image || undefined;
+      for (const menu of s.menuItems) if (menu.storeId === item.storeId && menu.category === item.category) menu.categoryImage = input.categoryImage || undefined;
+      return item;
+    }); res.json(result);
   }));
   router.post("/operations/:id/service/inventory/:stockId/adjustments", run(async (req, res, i) => {
     const input = z.object({ quantityDelta: z.number().int().min(-1e6).max(1e6).refine(v => v !== 0), note: z.string().trim().min(3).max(300) }).parse(req.body);

@@ -115,7 +115,7 @@ export function createOfflineApp(store: LocalStore, options: { call?: RemoteCall
   app.use("/api", (req, _res, next) => {
     if (req.method !== "GET") {
       if (store.meta("released") || store.meta("handover")) { next(new WorkspaceError(409, "This hub is handing service back to the cloud. Local sales are paused.")); return; }
-      if (!/^\/operations\/[^/]+\/(lifecycle|service\/(orders(?:\/[^/]+\/status)?|payments|menu-items|inventory\/[^/]+\/adjustments))$/.test(req.path)) { next(new WorkspaceError(403, "Manage business configuration and staff online, then sync this hub.")); return; }
+      if (!/^\/operations\/[^/]+\/(lifecycle|service\/(orders(?:\/[^/]+\/status)?|payments|menu-items(?:\/[^/]+\/images)?|inventory\/[^/]+\/adjustments))$/.test(req.path)) { next(new WorkspaceError(403, "Manage business configuration and staff online, then sync this hub.")); return; }
     }
     next();
   }, createWorkspaceApi(store.adapter as PrismaClient, authenticate));

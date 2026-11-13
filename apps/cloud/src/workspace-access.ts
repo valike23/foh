@@ -78,6 +78,7 @@ export async function authorizeRequest(db: PrismaClient, req: Request, i: Identi
     const row = await db.workspaceRecord.findUnique({ where: { tenantId_kind_id: { tenantId: i.tenant.id, kind: "runtime", id } } });
     const s = row?.data as unknown as HubSnapshot | undefined;
     let storeId = req.body.storeId;
+    if (resource === "menu-items" && resourceId) storeId = s?.menuItems.find(v => v.id === resourceId)?.storeId;
     if (resource === "inventory") storeId = s?.inventory.find(v => v.id === resourceId)?.storeId;
     if (resource === "orders" && resourceId) storeId = s?.orders.find(v => v.id === resourceId)?.storeId;
     if (resource === "payments") storeId = s?.orders.find(v => v.id === req.body.orderId)?.storeId;
