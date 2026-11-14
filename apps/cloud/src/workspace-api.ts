@@ -102,9 +102,10 @@ export function createWorkspaceApi(db: PrismaClient, authenticate: (req: Request
       for (const id of input.sectionIds) { const section = await record<FloorPlace>(tenantId, "floor", id); if (section.kind !== "section" || section.scopeId !== input.scopeId || section.scopeType !== input.scopeType) fail(422, "Section is outside this operation"); }
     }
     if (kind === "floor" && input.kind !== "section") {
-      const parent = await record<FloorPlace>(tenantId, "floor", input.parentId); const store = await record<ManagedStorefront>(tenantId, "storefronts", input.storefrontId);
-      if (parent.kind !== (input.kind === "table" ? "section" : "table") || parent.scopeId !== input.scopeId || store.scopeId !== input.scopeId || parent.scopeType !== input.scopeType || store.scopeType !== input.scopeType || parent.status !== "active") fail(422, "Choose a parent and storefront in this operation");
-      if (input.kind === "seat" && (input.capacity !== 1 || parent.storefrontId !== input.storefrontId)) fail(422, "Seats must use their table's storefront and have capacity one");
+      const directTable = input.kind === "table" && input.scopeType === "event" && !input.parentId;
+      const parent = directTable ? null : await record<FloorPlace>(tenantId, "floor", input.parentId); const store = await record<ManagedStorefront>(tenantId, "storefronts", input.storefrontId);
+      if (store.scopeId !== input.scopeId || store.scopeType !== input.scopeType || (!directTable && (!parent || parent.kind !== (input.kind === "table" ? "section" : "table") || parent.scopeId !== input.scopeId || parent.scopeType !== input.scopeType || parent.status !== "active"))) fail(422, "Choose a parent and storefront in this operation");
+      if (input.kind === "seat" && (input.capacity !== 1 || parent?.storefrontId !== input.storefrontId)) fail(422, "Seats must use their table's storefront and have capacity one");
     }
     if (kind === "floor" && input.kind === "section" && (input.parentId || input.storefrontId)) fail(422, "A section cannot have a parent or storefront.");
   }
