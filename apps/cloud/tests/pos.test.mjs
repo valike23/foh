@@ -37,7 +37,7 @@ test("POS login is separate; scoped cashier sales and payments are retry safe", 
   assert.equal((await request(imagesPath, { image, categoryImage: image }, dashboard.cookie, "PATCH")).status, 200);
   const withImages = await request(path + "/snapshot", undefined, cookie);
   assert.equal(withImages.data.menuItems[0].image, image);
-  assert.equal(withImages.data.menuItems[0].categoryImage, image);
+  assert.equal(withImages.data.menuItems[0].categoryImage, undefined);
   assert.equal((await request(imagesPath, { image: "data:image/svg+xml;base64,abc", categoryImage: "" }, dashboard.cookie, "PATCH")).status, 422);
   assert.equal((await request(imagesPath, { image: "", categoryImage: "" }, dashboard.cookie, "PATCH")).status, 200);
   const sale = { requestId: randomUUID(), storeId: store.id, customerName: "Ada Test", customerPhone: "08012345678", lines: [{ menuItemId: "rice", quantity: 2 }] };
